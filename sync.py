@@ -41,6 +41,20 @@ def clean(value):
     return value
 
 
+def clean_percent(value):
+    """Percent-formatted cells (e.g. "11.90%") come back as text from
+    Sheets - strip the % and convert to a plain number for Postgres."""
+    value = clean(value)
+    if value is None:
+        return None
+    if isinstance(value, str) and value.endswith("%"):
+        try:
+            return float(value[:-1])
+        except ValueError:
+            return None
+    return value
+
+
 def get_sheet_client():
     creds_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_KEY"])
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
@@ -92,7 +106,7 @@ def sync_position_monitoring(sb, trades):
                 "review_date": clean(row.get("review_date")),
                 "status": clean(row.get("status")) or "active",
                 "sleeve": clean(row.get("sleeve")),
-                "position_size_pct": clean(row.get("position_size_pct")),
+                "position_size_pct": clean_percent(row.get("position_size_pct")),
             }
         ).execute()
 
