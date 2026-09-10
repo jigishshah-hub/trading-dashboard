@@ -25,7 +25,11 @@ import gspread
 from google.oauth2.service_account import Credentials
 from supabase import create_client
 
-SHEET_NAME = "Trade Capture Log"
+# Opening by ID (not by name) deliberately avoids needing Google Drive
+# API access — gc.open("name") requires Drive scope to search for the
+# file by title, but gc.open_by_key(id) only needs the Sheets scope
+# already granted below.
+SHEET_ID = "1XK8nj3wDn1FlMNXluqR1Nyq16FtFb-7CTV88GC6gW4o"
 SUPABASE_URL = "https://egfsjboyzajyemjqazot.supabase.co"
 EXAMPLE_TICKER = "EXAMPLE"  # skip the template example row
 
@@ -50,7 +54,7 @@ def get_supabase_client():
 
 
 def read_sheet_data(gc):
-    sh = gc.open(SHEET_NAME)
+    sh = gc.open_by_key(SHEET_ID)
     trades = sh.worksheet("Trades").get_all_records()
     lots = sh.worksheet("Lots").get_all_records()
     return trades, lots
