@@ -1,0 +1,25 @@
+name: Monitor Announcements
+
+on:
+  # Hourly during extended NSE hours (pre-market through post-market),
+  # Monday-Friday. NSE trading: 9:15am-3:30pm IST = 3:45am-10:00am UTC.
+  # Running hourly with buffer either side.
+  schedule:
+    - cron: "0 3-11 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install feedparser supabase
+
+      - run: python announcements.py
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
