@@ -214,7 +214,7 @@ with tab_positions:
         styled = (
             filtered_df[display_cols]
             .style
-            .applymap(highlight_dist, subset=["Dist to Stop %"])
+            .map(highlight_dist, subset=["Dist to Stop %"])
             .format({"Entry": "{:.0f}", "Stop": "{:.1f}", "Dist to Stop %": "{:.2f}", "Dist to Target %": "{:.1f}"}, na_rep="—")
         )
         st.dataframe(styled, use_container_width=True, hide_index=True, height=35 * len(filtered_df) + 38)
