@@ -270,7 +270,7 @@ with tab_pos:
                 parts += [f"📐 {t.get('description')}" for t in trailing]
                 st.info("  \n".join(parts))
 
-            # Two-column detail
+            # Two-column detail: lots + news | research
             left, right = st.columns(2)
 
             with left:
@@ -281,29 +281,6 @@ with tab_pos:
                     for lot in tlots:
                         ld = lot.get("lot_date") or "date not set"
                         st.text(f"  {lot.get('qty')} shares @ ₹{lot.get('price')} — {ld}")
-
-                # Fundamentals — structured snapshot (metric cards)
-                snap = fund_snapshot_for(sel_ticker)
-                fc = fund_check_for(sel_ticker)
-                if fc:
-                    st.markdown(f"**Last research log:** {fc.get('type')} ({fc.get('severity_tag', '')})")
-
-                st.markdown("**📊 Fundamentals (latest snapshot)**")
-                if snap:
-                    st.caption(f"Period: {snap.get('period', '—')}")
-                    fc1, fc2, fc3, fc4, fc5 = st.columns(5)
-                    pe = f(snap.get("pe"))
-                    roe = f(snap.get("roe"))
-                    ebit = f(snap.get("ebit_margin"))
-                    rev = f(snap.get("revenue_growth_yoy"))
-                    de = f(snap.get("debt_to_equity"))
-                    fc1.metric("PE", f"{pe:.1f}x" if pe else "—")
-                    fc2.metric("ROE", f"{roe:.1f}%" if roe else "—")
-                    fc3.metric("EBIT margin", f"{ebit:.1f}%" if ebit else "—")
-                    fc4.metric("Revenue growth YoY", f"{rev:.1f}%" if rev else "—")
-                    fc5.metric("D/E", f"{de:.2f}x" if de else "—")
-                else:
-                    st.caption("No fundamentals snapshot yet for this ticker.")
 
             with right:
                 # News
@@ -328,6 +305,29 @@ with tab_pos:
                         sev = r.get("severity_tag", "")
                         summary = (r.get("summary") or "")[:100]
                         st.text(f"  {sev_icon(sev)} [{rtype}] {summary}…")
+
+            # Fundamentals — FULL WIDTH below the two-column block
+            fc = fund_check_for(sel_ticker)
+            if fc:
+                st.markdown(f"**Last research log:** {fc.get('type')} ({fc.get('severity_tag', '')})")
+
+            snap = fund_snapshot_for(sel_ticker)
+            st.markdown("**📊 Fundamentals (latest snapshot)**")
+            if snap:
+                st.caption(f"Period: {snap.get('period', '—')}")
+                fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+                pe = f(snap.get("pe"))
+                roe = f(snap.get("roe"))
+                ebit = f(snap.get("ebit_margin"))
+                rev = f(snap.get("revenue_growth_yoy"))
+                de = f(snap.get("debt_to_equity"))
+                fc1.metric("PE", f"{pe:.1f}x" if pe else "—")
+                fc2.metric("ROE", f"{roe:.1f}%" if roe else "—")
+                fc3.metric("EBIT margin", f"{ebit:.1f}%" if ebit else "—")
+                fc4.metric("Rev growth YoY", f"{rev:.1f}%" if rev else "—")
+                fc5.metric("D/E", f"{de:.2f}x" if de else "—")
+            else:
+                st.caption("No fundamentals snapshot yet for this ticker.")
 
 
 # ── TAB 2 — Announcements ──────────────────────────────────
