@@ -29,6 +29,7 @@ def load():
         "closed": sb.table("trade_history").select("*").order("exit_date", desc=True).execute().data or [],
         "news": sb.table("news_raw").select("*").order("published_at", desc=True).limit(100).execute().data or [],
         "research": sb.table("research_log").select("*").order("created_at", desc=True).execute().data or [],
+        "fundsnap": sb.table("fundamentals_snapshots").select("*").order("pulled_at", desc=True).execute().data or [],
     }
 
 
@@ -97,6 +98,11 @@ def research_for(ticker, limit=5):
 def fund_check_for(ticker):
     return next((r for r in D["research"]
                  if r.get("ticker") == ticker and r.get("type") == "fundamentals check"), None)
+
+
+def fund_snapshot_for(ticker):
+    """Latest structured fundamentals snapshot (from fundamentals_snapshots table)."""
+    return next((s for s in D["fundsnap"] if s.get("ticker") == ticker), None)
 
 
 def sev_icon(tag):
@@ -276,15 +282,28 @@ with tab_pos:
                         ld = lot.get("lot_date") or "date not set"
                         st.text(f"  {lot.get('qty')} shares @ ₹{lot.get('price')} — {ld}")
 
-                # Fundamentals
+                # Fundamentals — structured snapshot (metric cards)
+                snap = fund_snapshot_for(sel_ticker)
                 fc = fund_check_for(sel_ticker)
                 if fc:
-                    st.markdown("**📊 Last fundamentals check**")
-                    st.caption(f"{fc.get('type')} · {fc.get('severity_tag', '')}")
-                    st.text(fc.get("summary", "")[:400])
+                    st.markdown(f"**Last research log:** {fc.get('type')} ({fc.get('severity_tag', '')})")
+
+                st.markdown("**📊 Fundamentals (latest snapshot)**")
+                if snap:
+                    st.caption(f"Period: {snap.get('period', '—')}")
+                    fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+                    pe = f(snap.get("pe"))
+                    roe = f(snap.get("roe"))
+                    ebit = f(snap.get("ebit_margin"))
+                    rev = f(snap.get("revenue_growth_yoy"))
+                    de = f(snap.get("debt_to_equity"))
+                    fc1.metric("PE", f"{pe:.1f}x" if pe else "—")
+                    fc2.metric("ROE", f"{roe:.1f}%" if roe else "—")
+                    fc3.metric("EBIT margin", f"{ebit:.1f}%" if ebit else "—")
+                    fc4.metric("Revenue growth YoY", f"{rev:.1f}%" if rev else "—")
+                    fc5.metric("D/E", f"{de:.2f}x" if de else "—")
                 else:
-                    st.markdown("**📊 Fundamentals**")
-                    st.caption("No fundamentals check logged yet for this ticker.")
+                    st.caption("No fundamentals snapshot yet for this ticker.")
 
             with right:
                 # News
