@@ -241,6 +241,99 @@ m5.metric("Material alerts", len(mat_news))
 st.divider()
 
 
+# ── Action Alert Banner ────────────────────────────────────
+# Scan active positions for anything needing immediate attention
+def build_alerts(positions):
+    """Build list of (ticker, severity, message) for positions needing action."""
+    alerts = []
+    for p in positions:
+        ticker = p.get("ticker")
+        entry = f(p.get("entry_price"))
+        stop = f(p.get("stop_loss"))
+        cmp, is_live = get_cmp(ticker, entry)
+        price = cmp or entry
+
+        # 1. Stop proximity
+        d_stop = pct_away(price, stop) if price and stop else None
+        if d_stop is not None and d_stop <= 3:
+            alerts.append((ticker, "danger",
+                           f"⚠️ {d_stop:.1f}% from stop-loss — consider exit or tighten"))
+        elif d_stop is not None and d_stop <= 7:
+            alerts.append((ticker, "warning",
+                           f"📉 {d_stop:.1f}% from stop-loss — monitor closely"))
+
+        # 2. Thesis-threatening news
+        threat_news = [n for n in D["news"]
+                       if n.get("ticker") == ticker
+                       and n.get("severity_tag") == "thesis-threatening"]
+        if threat_news:
+            latest = threat_news[0].get("headline", "")[:60]
+            alerts.append((ticker, "danger",
+                           f"🔴 Thesis threat: {latest}"))
+
+        # 3. Overdue review
+        urg = review_urgency(p.get("review_date"))
+        if "overdue" in urg:
+            alerts.append((ticker, "danger",
+                           f"📋 Review overdue since {fmt_date(p.get('review_date'))}"))
+        elif "soon" in urg:
+            alerts.append((ticker, "warning",
+                           f"📋 Review due {fmt_date(p.get('review_date'))}"))
+
+        # 4. Unverified material news
+        mat_unverified = [n for n in D["news"]
+                          if n.get("ticker") == ticker
+                          and n.get("severity_tag") == "material change"
+                          and n.get("verified_status") == "unverified"]
+        if mat_unverified:
+            alerts.append((ticker, "warning",
+                           f"🟡 {len(mat_unverified)} unverified material alert(s)"))
+
+    return alerts
+
+
+position_alerts = build_alerts(active)
+danger_alerts = [a for a in position_alerts if a[1] == "danger"]
+warning_alerts = [a for a in position_alerts if a[1] == "warning"]
+
+if danger_alerts:
+    danger_html = "".join(
+        f'<div style="padding:6px 12px; margin:2px 0; font-size:13px">'
+        f'<strong>{t}</strong> — {msg}</div>'
+        for t, _, msg in danger_alerts
+    )
+    st.markdown(
+        f'<div style="background:rgba(239,68,68,.08); border:1px solid #ef4444; '
+        f'border-radius:8px; padding:4px 0; margin-bottom:8px">'
+        f'<div style="padding:4px 12px; font-size:14px; font-weight:700; color:#dc2626">'
+        f'🚨 ACTION REQUIRED ({len(danger_alerts)})</div>'
+        f'{danger_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+if warning_alerts:
+    warn_html = "".join(
+        f'<div style="padding:4px 12px; margin:1px 0; font-size:12px">'
+        f'<strong>{t}</strong> — {msg}</div>'
+        for t, _, msg in warning_alerts
+    )
+    st.markdown(
+        f'<div style="background:rgba(245,158,11,.06); border:1px solid #f59e0b; '
+        f'border-radius:8px; padding:4px 0; margin-bottom:8px">'
+        f'<div style="padding:4px 12px; font-size:13px; font-weight:600; color:#d97706">'
+        f'⚡ WATCH ({len(warning_alerts)})</div>'
+        f'{warn_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+# Build per-ticker alert summary for the watchlist table
+ticker_alert_map = {}
+for t, sev, msg in position_alerts:
+    if t not in ticker_alert_map:
+        ticker_alert_map[t] = {"danger": 0, "warning": 0}
+    ticker_alert_map[t][sev] += 1
+
+
 # ── Tabs ────────────────────────────────────────────────────
 tab_pos, tab_ann, tab_cl, tab_res = st.tabs([
     f"📊 Positions ({len(active)})",
@@ -279,9 +372,26 @@ with tab_pos:
         t_status = thesis_status(ticker)
         r_urgency = review_urgency(p.get("review_date"))
 
+        # Build alert badge for this ticker
+        ta = ticker_alert_map.get(ticker, {"danger": 0, "warning": 0})
+        alert_parts = []
+        if ta["danger"]:
+            alert_parts.append(f"🔴×{ta['danger']}" if ta["danger"] > 1 else "🔴")
+        if ta["warning"]:
+            alert_parts.append(f"🟡×{ta['warning']}" if ta["warning"] > 1 else "🟡")
+        alert_badge = " ".join(alert_parts)
+
+        # Row urgency level for background tinting
+        row_urgency = "none"
+        if ta["danger"] > 0:
+            row_urgency = "danger"
+        elif ta["warning"] > 0:
+            row_urgency = "warning"
+
         rows.append({
             "trade_id": tid,
             "Ticker": ticker,
+            "Alerts": alert_badge,
             "CMP": cmp or 0,
             "CMP_display": cmp_display,
             "is_live": is_live,
@@ -296,6 +406,7 @@ with tab_pos:
             "Size %": f"{p['position_size_pct']}%" if p.get("position_size_pct") else "—",
             "Review": r_urgency,
             "thesis_status": t_status,
+            "row_urgency": row_urgency,
         })
 
     df = pd.DataFrame(rows)
@@ -325,10 +436,21 @@ with tab_pos:
                 return "color: #16a34a; font-weight: 600"
             return "color: #dc2626; font-weight: 600"
 
-        show = ["Ticker", "CMP_display", "Entry", "Stop", "Dist to stop %",
-                "P&L %", "Target", "Dist to target %", "Sleeve", "Size %", "Review"]
+        def hl_row_urgency(row):
+            """Apply full-row background tinting based on combined urgency."""
+            urg = row.get("row_urgency", "none") if "row_urgency" in row.index else "none"
+            if urg == "danger":
+                return ["background-color: rgba(239,68,68,.06)"] * len(row)
+            if urg == "warning":
+                return ["background-color: rgba(245,158,11,.04)"] * len(row)
+            return [""] * len(row)
+
+        show = ["Ticker", "Alerts", "CMP_display", "Entry", "Stop", "Dist to stop %",
+                "P&L %", "Target", "Dist to target %", "Sleeve", "Size %", "Review",
+                "row_urgency"]
         styled = (
             df[show].style
+            .apply(hl_row_urgency, axis=1)
             .map(hl_dist, subset=["Dist to stop %"])
             .map(hl_pnl, subset=["P&L %"])
             .format({
@@ -340,7 +462,11 @@ with tab_pos:
             })
         )
         event = st.dataframe(styled, use_container_width=True, hide_index=True,
-                      column_config={"CMP_display": st.column_config.Column("CMP")},
+                      column_config={
+                          "CMP_display": st.column_config.Column("CMP"),
+                          "Alerts": st.column_config.Column("⚡", width="small"),
+                          "row_urgency": None,  # hide helper column
+                      },
                       selection_mode="single-row", on_select="rerun")
 
         # ── Detail panel — driven by row click ─────────────
