@@ -339,12 +339,19 @@ with tab_pos:
                 "Dist to target %": lambda x: f"{x:.1f}" if x and not pd.isna(x) else "—",
             })
         )
-        st.dataframe(styled, use_container_width=True, hide_index=True,
-                      column_config={"CMP_display": st.column_config.Column("CMP")})
+        event = st.dataframe(styled, use_container_width=True, hide_index=True,
+                      column_config={"CMP_display": st.column_config.Column("CMP")},
+                      selection_mode="single-row", on_select="rerun")
 
-        # ── Detail panel ────────────────────────────────────
+        # ── Detail panel — driven by row click ─────────────
         st.divider()
-        sel_ticker = st.selectbox("Select position for detail", df["Ticker"].tolist())
+        selected_rows = event.selection.rows if event.selection else []
+        if selected_rows:
+            sel_ticker = df.iloc[selected_rows[0]]["Ticker"]
+        else:
+            # Default to first row (closest to stop-loss)
+            sel_ticker = df.iloc[0]["Ticker"]
+            st.caption("👆 Click any row above to view its details")
 
         if sel_ticker:
             pos = next(p for p in active if p.get("ticker") == sel_ticker)
