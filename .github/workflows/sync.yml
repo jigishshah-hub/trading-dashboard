@@ -1,13 +1,14 @@
-name: Sync Trade Sheet to Supabase
+name: "[DISABLED] Sync Trade Sheet to Supabase"
+
+# DISABLED 2026-09-17: Supabase is now the single source of truth.
+# Google Sheet sync retired — all trade data is managed directly in
+# Supabase via Claude, Obsidian, or the dashboard.
+# Keeping the file for reference; remove after confirming everything
+# works without it.
 
 on:
-  # Every 30 minutes, roughly NSE trading hours (9:15am-3:30pm IST),
-  # Monday-Friday. Times are in UTC (IST is UTC+5:30), with a bit of
-  # buffer either side. Adjust later if you want a different cadence.
-  schedule:
-    - cron: "*/30 3-10 * * 1-5"
-  # Lets you trigger it manually from the Actions tab in GitHub, for
-  # testing without waiting for the schedule.
+  # Schedule removed — no longer runs automatically.
+  # Manual trigger preserved for emergency use only.
   workflow_dispatch:
 
 jobs:
