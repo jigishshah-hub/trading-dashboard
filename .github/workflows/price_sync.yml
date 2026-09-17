@@ -1,0 +1,25 @@
+name: Sync Prices from Screener.in
+
+on:
+  # Every 30 minutes during NSE trading hours (9:15am-3:30pm IST),
+  # Monday-Friday. Same window as trade sync.
+  # IST = UTC+5:30, so 3:45am-10:00am UTC, with buffer either side.
+  schedule:
+    - cron: "*/30 3-10 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  sync-prices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - run: python price_sync.py
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
