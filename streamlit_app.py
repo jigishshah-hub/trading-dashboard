@@ -6,7 +6,7 @@ Live portfolio monitoring connected to Supabase Postgres.
 import streamlit as st
 from supabase import create_client
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # ── Config ──────────────────────────────────────────────────
 st.set_page_config(page_title="Trading Dashboard", page_icon="📈", layout="wide")
@@ -26,16 +26,35 @@ def load():
         "pos": sb.table("position_monitoring").select("*").order("trade_id").execute().data or [],
         "conds": sb.table("position_monitoring_conditions").select("*").execute().data or [],
         "lots": sb.table("lots").select("*").order("lot_id").execute().data or [],
+        "stocks": sb.table("stocks").select("ticker, current_price, price_updated_at").execute().data or [],
         "closed": sb.table("trade_history").select("*").order("exit_date", desc=True).execute().data or [],
-        "news": sb.table("news_raw").select("*").order("published_at", desc=True).limit(100).execute().data or [],
+        "news": sb.table("news_raw").select("*").order("published_at", desc=True).limit(200).execute().data or [],
         "research": sb.table("research_log").select("*").order("created_at", desc=True).execute().data or [],
         "fundsnap": sb.table("fundamentals_snapshots").select("*").order("pulled_at", desc=True).execute().data or [],
     }
 
 
 D = load()
+
 active = [p for p in D["pos"] if p.get("status") == "active"]
 exited = [p for p in D["pos"] if p.get("status") == "exited"]
+
+# Build a price lookup: ticker -> (current_price, price_updated_at)
+price_map = {}
+for s in D["stocks"]:
+    cp = s.get("current_price")
+    pu = s.get("price_updated_at")
+    if cp is not None:
+        # Check freshness — consider stale after 24 hours
+        is_fresh = True
+        if pu:
+            try:
+                updated = datetime.fromisoformat(str(pu).replace("Z", "+00:00"))
+                is_fresh = (datetime.now(timezone.utc) - updated) < timedelta(hours=24)
+            except Exception:
+                is_fresh = False
+        if is_fresh:
+            price_map[s["ticker"]] = float(cp)
 
 
 # ── Helpers ─────────────────────────────────────────────────
@@ -49,18 +68,34 @@ def f(v):
         return None
 
 
-def pct_away(entry, ref):
-    e, r = f(entry), f(ref)
-    if not e or not r or e == 0:
-        return None
-    return round(abs(e - r) / e * 100, 2)
+def get_cmp(ticker, entry_price=None):
+    """Get current market price. Returns (price, is_live) tuple."""
+    if ticker in price_map:
+        return price_map[ticker], True
+    if entry_price is not None:
+        return entry_price, False
+    return None, False
 
 
-def pct_to_target(entry, target):
-    e, t = f(entry), f(target)
-    if not e or not t or e == 0:
+def pct_change(base, current):
+    b, c = f(base), f(current)
+    if not b or not c or b == 0:
         return None
-    return round((t - e) / e * 100, 1)
+    return round((c - b) / b * 100, 2)
+
+
+def pct_away(price, ref):
+    p, r = f(price), f(ref)
+    if not p or not r or p == 0:
+        return None
+    return round(abs(p - r) / p * 100, 2)
+
+
+def pct_to_target(price, target):
+    p, t = f(price), f(target)
+    if not p or not t or p == 0:
+        return None
+    return round((t - p) / p * 100, 1)
 
 
 def fmt_date(d):
@@ -95,13 +130,8 @@ def research_for(ticker, limit=5):
     return [r for r in D["research"] if r.get("ticker") == ticker][:limit]
 
 
-def fund_check_for(ticker):
-    return next((r for r in D["research"]
-                 if r.get("ticker") == ticker and r.get("type") == "fundamentals check"), None)
-
-
 def fund_snapshot_for(ticker):
-    """Latest structured fundamentals snapshot (from fundamentals_snapshots table)."""
+    """Latest structured fundamentals snapshot."""
     return next((s for s in D["fundsnap"] if s.get("ticker") == ticker), None)
 
 
@@ -121,6 +151,35 @@ def sev_border(tag):
     return "#d1d5db"
 
 
+def review_urgency(review_date):
+    """Return urgency indicator for review dates."""
+    if not review_date:
+        return ""
+    try:
+        rd = datetime.fromisoformat(str(review_date)).date()
+        today = datetime.now().date()
+        days_until = (rd - today).days
+        if days_until < 0:
+            return "🔴 overdue"
+        if days_until <= 3:
+            return "⏰ soon"
+        return ""
+    except Exception:
+        return ""
+
+
+def thesis_status(ticker):
+    """Derive thesis status from latest news severity for a ticker."""
+    ticker_news = [n for n in D["news"] if n.get("ticker") == ticker]
+    has_thesis_threat = any(n.get("severity_tag") == "thesis-threatening" for n in ticker_news)
+    has_material = any(n.get("severity_tag") == "material change" for n in ticker_news)
+    if has_thesis_threat:
+        return "Thesis threatened"
+    if has_material:
+        return "Under review"
+    return "Thesis intact"
+
+
 # ── Sidebar ─────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 📈 Trading Dashboard")
@@ -133,25 +192,49 @@ with st.sidebar:
     setups = sorted(set(p.get("setup") or "" for p in active if p.get("setup")))
     sel_setups = st.multiselect("Setup type", setups, default=setups)
 
+    thesis_statuses = ["Thesis intact", "Under review", "Thesis threatened"]
+    sel_thesis = st.multiselect("Thesis status", thesis_statuses, default=thesis_statuses)
+
     st.divider()
     if st.button("🔄 Refresh data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
     st.divider()
+    has_live = len(price_map) > 0
+    if has_live:
+        st.caption(f"✅ Live prices: {len(price_map)} tickers")
+    else:
+        st.caption("⚠️ No live prices — showing entry prices")
     st.caption("Sheet → Postgres sync: every 30 min")
+    st.caption("Price sync: every 30 min (market hours)")
     st.caption("Announcements monitor: hourly")
 
 
 # ── Header metrics ──────────────────────────────────────────
-total_val = sum((f(p.get("entry_price")) or 0) * (f(p.get("quantity")) or 0) for p in active)
+deployed_cost = sum((f(p.get("entry_price")) or 0) * (f(p.get("quantity")) or 0) for p in active)
+
+# Market value uses CMP where available
+market_val = 0
+for p in active:
+    ticker = p.get("ticker")
+    qty = f(p.get("quantity")) or 0
+    cmp, is_live = get_cmp(ticker, f(p.get("entry_price")))
+    market_val += (cmp or 0) * qty
+
 mat_news = [n for n in D["news"] if n.get("severity_tag") != "routine update"]
 wins = sum(1 for t in D["closed"]
            if (f(t.get("exit_price")) or 0) > (f(t.get("entry_price")) or 0))
 
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Active positions", len(active))
-m2.metric("Deployed capital", f"₹{total_val / 1000:,.0f}K")
+if has_live:
+    pnl = market_val - deployed_cost
+    pnl_pct = round(pnl / deployed_cost * 100, 1) if deployed_cost else 0
+    m2.metric("Market value", f"₹{market_val / 1000:,.0f}K",
+              delta=f"{'+' if pnl_pct >= 0 else ''}{pnl_pct}% P&L")
+else:
+    m2.metric("Deployed cost", f"₹{deployed_cost / 1000:,.0f}K")
 m3.metric("Closed trades", len(D["closed"]))
 m4.metric("Win rate", f"{wins}/{len(D['closed'])}" if D["closed"] else "—")
 m5.metric("Material alerts", len(mat_news))
@@ -169,9 +252,14 @@ tab_pos, tab_ann, tab_cl, tab_res = st.tabs([
 
 # ── TAB 1 — Watchlist ───────────────────────────────────────
 with tab_pos:
+    if not has_live:
+        st.info("💡 Live prices not yet connected — distances and P&L are calculated from entry price. "
+                "Push `price_sync.py` to GitHub to enable 30-min price updates.")
+
     rows = []
     for p in active:
         tid = p["trade_id"]
+        ticker = p.get("ticker")
         entry = f(p.get("entry_price"))
         stop = f(p.get("stop_loss"))
         qty = f(p.get("quantity"))
@@ -179,18 +267,35 @@ with tab_pos:
         t1_desc = targets[0].get("description") if targets else None
         t1_num = f(t1_desc)
 
+        cmp, is_live = get_cmp(ticker, entry)
+        cmp_display = f"₹{cmp:,.1f}" if cmp else "—"
+        if not is_live and cmp:
+            cmp_display += " (E)"  # mark as entry-based
+
+        pnl = pct_change(entry, cmp) if cmp and entry else None
+        dist_stop = pct_away(cmp, stop) if cmp and stop else pct_away(entry, stop)
+        dist_target = pct_to_target(cmp, t1_num) if cmp and t1_num else pct_to_target(entry, t1_num) if t1_num else None
+
+        t_status = thesis_status(ticker)
+        r_urgency = review_urgency(p.get("review_date"))
+
         rows.append({
             "trade_id": tid,
-            "Ticker": p.get("ticker"),
+            "Ticker": ticker,
+            "CMP": cmp or 0,
+            "CMP_display": cmp_display,
+            "is_live": is_live,
             "Setup": p.get("setup") or "",
             "Entry": entry,
             "Stop": stop,
-            "Dist to stop %": pct_away(entry, stop),
+            "Dist to stop %": dist_stop,
+            "P&L %": pnl,
             "Target": t1_desc or "—",
-            "Dist to target %": pct_to_target(entry, t1_num) if t1_num else None,
+            "Dist to target %": dist_target,
             "Sleeve": p.get("sleeve") or "Unassigned",
             "Size %": f"{p['position_size_pct']}%" if p.get("position_size_pct") else "—",
-            "Value": f"₹{int(entry * qty):,}" if entry and qty else "—",
+            "Review": r_urgency,
+            "thesis_status": t_status,
         })
 
     df = pd.DataFrame(rows)
@@ -199,6 +304,7 @@ with tab_pos:
         df = df[df["Sleeve"].isin(sel_sleeves)]
         if sel_setups:
             df = df[df["Setup"].isin(sel_setups)]
+        df = df[df["thesis_status"].isin(sel_thesis)]
 
     if df.empty:
         st.info("No active positions match filters.")
@@ -212,19 +318,29 @@ with tab_pos:
                 return "background-color: rgba(245,158,11,.15); color: #d97706; font-weight: 600"
             return ""
 
-        show = ["Ticker", "Setup", "Entry", "Stop", "Dist to stop %",
-                "Target", "Dist to target %", "Sleeve", "Size %", "Value"]
+        def hl_pnl(v):
+            if v is None or pd.isna(v):
+                return ""
+            if v >= 0:
+                return "color: #16a34a; font-weight: 600"
+            return "color: #dc2626; font-weight: 600"
+
+        show = ["Ticker", "CMP_display", "Entry", "Stop", "Dist to stop %",
+                "P&L %", "Target", "Dist to target %", "Sleeve", "Size %", "Review"]
         styled = (
             df[show].style
             .map(hl_dist, subset=["Dist to stop %"])
+            .map(hl_pnl, subset=["P&L %"])
             .format({
                 "Entry": lambda x: f"₹{x:,.0f}" if x else "—",
                 "Stop": lambda x: f"₹{x:,.1f}" if x else "—",
                 "Dist to stop %": lambda x: f"{x:.2f}" if x and not pd.isna(x) else "—",
+                "P&L %": lambda x: f"{x:+.2f}" if x and not pd.isna(x) else "—",
                 "Dist to target %": lambda x: f"{x:.1f}" if x and not pd.isna(x) else "—",
             })
         )
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(styled, use_container_width=True, hide_index=True,
+                      column_config={"CMP_display": st.column_config.Column("CMP")})
 
         # ── Detail panel ────────────────────────────────────
         st.divider()
@@ -239,21 +355,23 @@ with tab_pos:
             targets = conds_for(tid, "target")
             trailing = conds_for(tid, "trailing_stop")
 
-            st.caption("⚠️ Price shown is entry price — live price feed not yet connected.")
+            cmp, is_live = get_cmp(sel_ticker, entry)
+            price_label = "CMP" if is_live else "Entry price"
 
             # Metric cards
             mc = st.columns(5)
-            mc[0].metric("Current price", f"₹{entry:,.2f}")
-            d_stop = pct_away(entry, stop)
+            mc[0].metric(price_label, f"₹{cmp:,.2f}" if cmp else "—")
+
+            d_stop = pct_away(cmp, stop)
+            stop_delta = f"↑ {d_stop:.1f}% away" if d_stop else None
             mc[1].metric("Stop-loss", f"₹{stop:,.0f}",
-                         delta=f"↑ {d_stop:.1f}% away" if d_stop else None,
-                         delta_color="inverse")
+                         delta=stop_delta, delta_color="inverse")
 
             if targets:
                 t1 = targets[0].get("description", "")
                 t1v = f(t1)
                 if t1v:
-                    dt = pct_to_target(entry, t1v)
+                    dt = pct_to_target(cmp, t1v)
                     mc[2].metric("Target", f"₹{t1v:,.0f}",
                                 delta=f"↑ {dt:.1f}% to go" if dt else None)
                 else:
@@ -262,7 +380,19 @@ with tab_pos:
                 mc[2].metric("Target", "—")
 
             mc[3].metric("Quantity", f"{int(qty)}")
-            mc[4].metric("Position value", f"₹{entry * qty:,.0f}")
+
+            if is_live and cmp:
+                unrealized = (cmp - entry) * qty
+                mc[4].metric("Unrealized P&L",
+                             f"₹{unrealized:,.0f}",
+                             delta=f"{pct_change(entry, cmp):+.1f}%" if pct_change(entry, cmp) is not None else None)
+            else:
+                mc[4].metric("Position cost", f"₹{entry * qty:,.0f}")
+
+            # Review date warning
+            r_urg = review_urgency(pos.get("review_date"))
+            if r_urg:
+                st.warning(f"Review date: {fmt_date(pos.get('review_date'))} — {r_urg}")
 
             # Target / trailing notes
             if len(targets) > 1 or trailing:
@@ -274,7 +404,6 @@ with tab_pos:
             left, right = st.columns(2)
 
             with left:
-                # Lots
                 tlots = [l for l in D["lots"] if l.get("trade_id") == tid]
                 if tlots:
                     st.markdown("**📦 Lots**")
@@ -283,20 +412,22 @@ with tab_pos:
                         st.text(f"  {lot.get('qty')} shares @ ₹{lot.get('price')} — {ld}")
 
             with right:
-                # News
                 tnews = news_for(sel_ticker)
                 if tnews:
                     st.markdown("**📰 Recent announcements**")
                     for n in tnews:
                         sev = n.get("severity_tag", "routine update")
                         src = (n.get("source") or "").upper()
-                        hl = (n.get("headline") or "")[:65]
+                        hl = (n.get("headline") or "")[:80]
+                        snippet = (n.get("body_snippet") or "")[:120]
                         dt = short_date(n.get("published_at"))
-                        st.text(f"  {sev_icon(sev)} [{src}] {hl} ({dt})")
+                        line = f"  {sev_icon(sev)} [{src}] {hl} ({dt})"
+                        st.text(line)
+                        if snippet:
+                            st.caption(f"    ↳ {snippet}")
                 else:
                     st.caption("No recent announcements for this ticker.")
 
-                # Research history
                 tres = research_for(sel_ticker)
                 if tres:
                     st.markdown("**📝 Research history**")
@@ -306,11 +437,7 @@ with tab_pos:
                         summary = (r.get("summary") or "")[:100]
                         st.text(f"  {sev_icon(sev)} [{rtype}] {summary}…")
 
-            # Fundamentals — FULL WIDTH below the two-column block
-            fc = fund_check_for(sel_ticker)
-            if fc:
-                st.markdown(f"**Last research log:** {fc.get('type')} ({fc.get('severity_tag', '')})")
-
+            # Fundamentals — full width
             snap = fund_snapshot_for(sel_ticker)
             st.markdown("**📊 Fundamentals (latest snapshot)**")
             if snap:
@@ -345,12 +472,8 @@ with tab_ann:
     if ann_ticker != "All":
         feed = [n for n in feed if n.get("ticker") == ann_ticker]
 
-    # Sort: material/thesis-threatening first
-    sev_order = {"thesis-threatening": 0, "material change": 1, "routine update": 2}
-    feed.sort(key=lambda n: (sev_order.get(n.get("severity_tag", "routine update"), 2),
-                              n.get("published_at") or ""), reverse=False)
-    # Within same severity, most recent first
-    feed.sort(key=lambda n: sev_order.get(n.get("severity_tag", "routine update"), 2))
+    # Sort: latest first (published_at DESC), simple and predictable
+    feed.sort(key=lambda n: n.get("published_at") or "", reverse=True)
 
     if not feed:
         st.info("No announcements match this filter.")
@@ -359,6 +482,7 @@ with tab_ann:
             sev = n.get("severity_tag", "routine update")
             ticker = n.get("ticker", "")
             headline = n.get("headline", "")
+            snippet = n.get("body_snippet") or ""
             source = (n.get("source") or "").upper()
             verified = n.get("verified_status", "unverified")
             date = short_date(n.get("published_at"))
@@ -375,12 +499,13 @@ with tab_ann:
                 f'<span style="font-size:11px; color:#777">'
                 f'{date} · {sev} · {verified}</span>'
             )
+            if snippet:
+                html += f'<br/><span style="font-size:12px; color:#444; line-height:1.5">↳ {snippet[:200]}</span>'
             if reasoning:
-                html += f'<br/><span style="font-size:11px; color:#555">↳ {reasoning}</span>'
+                html += f'<br/><span style="font-size:11px; color:#555; font-style:italic">⚡ {reasoning}</span>'
             html += '</div>'
             st.markdown(html, unsafe_allow_html=True)
 
-            # Verify button for material+ items
             if sev != "routine update" and verified == "unverified":
                 if st.button(f"🔍 Verify across sources", key=f"verify_{n.get('id')}"):
                     st.info(f"Verification for \"{headline}\" — manual cross-check needed. "
