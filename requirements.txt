@@ -5,3 +5,5 @@ feedparser
 streamlit
 supabase
 pandas
+beautifulsoup4
+requests
