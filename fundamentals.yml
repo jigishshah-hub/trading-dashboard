@@ -1,0 +1,25 @@
+name: Sync Fundamentals from Screener.in
+
+on:
+  # Weekly on Sunday at 06:00 UTC (11:30 AM IST).
+  # Fundamentals don't change intraday — weekly is plenty.
+  schedule:
+    - cron: "0 6 * * 0"
+  # Manual trigger for testing or on-demand refresh.
+  workflow_dispatch:
+
+jobs:
+  sync-fundamentals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - run: python fundamentals_sync.py
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
