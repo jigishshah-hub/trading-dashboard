@@ -54,6 +54,7 @@ def load():
         "news": sb.table("news_raw").select("*").order("published_at", desc=True).limit(200).execute().data or [],
         "research": sb.table("research_log").select("*").order("created_at", desc=True).execute().data or [],
         "fundsnap": sb.table("fundamentals_snapshots").select("*").order("pulled_at", desc=True).execute().data or [],
+        "breadth": sb.table("breadth_readings").select("*").order("reading_date", desc=True).limit(1).execute().data or [],
     }
 
 
@@ -96,13 +97,83 @@ def fetch_nifty_regime():
 
 nifty = fetch_nifty_regime()
 
-# Tactical Ladder tiers
+
+# ── Nifty 50 Breadth — % stocks above 200 DMA ─────────────
+NIFTY50_TICKERS = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+    "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "ASIANPAINT.NS", "MARUTI.NS",
+    "HCLTECH.NS", "SUNPHARMA.NS", "TATAMOTORS.NS", "NTPC.NS", "TITAN.NS",
+    "WIPRO.NS", "ULTRACEMCO.NS", "ONGC.NS", "NESTLEIND.NS", "POWERGRID.NS",
+    "JSWSTEEL.NS", "M&M.NS", "TATASTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS",
+    "BAJAJFINSV.NS", "TECHM.NS", "HDFCLIFE.NS", "DIVISLAB.NS", "DRREDDY.NS",
+    "SBILIFE.NS", "BRITANNIA.NS", "CIPLA.NS", "APOLLOHOSP.NS", "GRASIM.NS",
+    "INDUSINDBK.NS", "EICHERMOT.NS", "TATACONSUM.NS", "COALINDIA.NS",
+    "BAJAJ-AUTO.NS", "BPCL.NS", "BEL.NS", "TRENT.NS", "SHRIRAMFIN.NS",
+    "HEROMOTOCO.NS",
+]
+
+
+@st.cache_data(ttl=900)  # 15-min cache
+def fetch_nifty50_breadth():
+    """Compute % of Nifty 50 stocks trading above their 200 DMA."""
+    try:
+        data = yf.download(NIFTY50_TICKERS, period="1y", group_by="ticker",
+                           progress=False, threads=True)
+        above = 0
+        total = 0
+        details = []  # (ticker, above_200dma: bool)
+        for tkr in NIFTY50_TICKERS:
+            try:
+                closes = data[tkr]["Close"].dropna()
+                if len(closes) < 200:
+                    continue
+                sma200 = closes.rolling(200).mean().iloc[-1]
+                last = closes.iloc[-1]
+                is_above = float(last) > float(sma200)
+                above += int(is_above)
+                total += 1
+                details.append({"ticker": tkr.replace(".NS", ""), "above": is_above,
+                                "price": float(last), "sma200": float(sma200)})
+            except Exception:
+                continue
+        if total == 0:
+            return None
+        return {
+            "above_count": above, "total": total,
+            "pct_above": round((above / total) * 100, 1),
+            "details": sorted(details, key=lambda d: d["ticker"]),
+        }
+    except Exception:
+        return None
+
+
+breadth_yf = fetch_nifty50_breadth()
+
+# ── P&F Breadth from Supabase (authoritative) ─────────────
+# Latest Rzone P&F X-Percent Breadth reading stored in breadth_readings table.
+# Falls back to yfinance-computed % above 200 DMA if no P&F reading exists.
+pnf_row = D["breadth"][0] if D["breadth"] else None
+if pnf_row:
+    breadth = {
+        "pct_above": float(pnf_row["breadth_pct"]),
+        "avg": float(pnf_row["avg_breadth_pct"]) if pnf_row.get("avg_breadth_pct") else None,
+        "source": pnf_row.get("source", "rzone_pnf"),
+        "date": pnf_row["reading_date"],
+        "above_count": None, "total": None,
+    }
+elif breadth_yf:
+    breadth = {**breadth_yf, "source": "yfinance", "avg": None, "date": None}
+else:
+    breadth = None
+
+# Tactical Ladder tiers (dual-condition: EMA distance + breadth)
 LADDER_TIERS = [
-    {"tier": 1, "threshold": -5.0,  "deploy_pct": 8, "label": "Tier 1 — Light correction"},
-    {"tier": 2, "threshold": -10.0, "deploy_pct": 8, "label": "Tier 2 — Moderate correction"},
-    {"tier": 3, "threshold": -15.0, "deploy_pct": 8, "label": "Tier 3 — Deep correction"},
-    {"tier": 4, "threshold": -20.0, "deploy_pct": 8, "label": "Tier 4 — Severe correction"},
-    {"tier": 5, "threshold": -25.0, "deploy_pct": 8, "label": "Tier 5 — Panic lows"},
+    {"tier": 1, "threshold": -5.0,  "breadth_max": 40, "deploy_pct": 8, "label": "Tier 1 — Light correction"},
+    {"tier": 2, "threshold": -10.0, "breadth_max": 35, "deploy_pct": 8, "label": "Tier 2 — Moderate correction"},
+    {"tier": 3, "threshold": -15.0, "breadth_max": 30, "deploy_pct": 8, "label": "Tier 3 — Deep correction"},
+    {"tier": 4, "threshold": -20.0, "breadth_max": 25, "deploy_pct": 8, "label": "Tier 4 — Severe correction"},
+    {"tier": 5, "threshold": -25.0, "breadth_max": 20, "deploy_pct": 8, "label": "Tier 5 — Panic lows"},
 ]
 
 CAPITAL_ARCH = [
@@ -499,29 +570,41 @@ with tab_cockpit:
 
         if nifty:
             pct = nifty["pct_from_ema"]
+            bpct = breadth["pct_above"] if breadth else None
 
-            # Determine system state
-            if pct <= -25:
+            # Determine system state using DUAL-CONDITION logic
+            # Both EMA distance AND breadth filter must be met for deployment tiers
+            def tier_met(ema_thr, breadth_max):
+                """Check if both conditions are satisfied."""
+                ema_ok = pct <= ema_thr
+                breadth_ok = bpct is not None and bpct <= breadth_max
+                return ema_ok and breadth_ok
+
+            if tier_met(-25, 20):
                 sys_state, sys_icon, sys_color, sys_bg = "DEPLOY ALL", "🔴", "#a92e2e", "#feecec"
                 deploy_perm = "FULL DEPLOYMENT — ALL 5 TIERS"
-            elif pct <= -20:
+            elif tier_met(-20, 25):
                 sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T4", "🟠", "#c05621", "#fff0e6"
                 deploy_perm = "DEPLOY TIER 4 — 32% tactical deployed"
-            elif pct <= -15:
+            elif tier_met(-15, 30):
                 sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T3", "🟡", "#a76a00", "#fff6dd"
                 deploy_perm = "DEPLOY TIER 3 — 24% tactical deployed"
-            elif pct <= -10:
+            elif tier_met(-10, 35):
                 sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T2", "🟡", "#a76a00", "#fff6dd"
                 deploy_perm = "DEPLOY TIER 2 — 16% tactical deployed"
-            elif pct <= -5:
+            elif tier_met(-5, 40):
                 sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T1", "🟡", "#a76a00", "#fff6dd"
                 deploy_perm = "DEPLOY TIER 1 — 8% tactical deployed"
-            elif pct >= 20:
+            elif pct >= 20 and bpct is not None and bpct >= 80:
                 sys_state, sys_icon, sys_color, sys_bg = "OVEREXTENDED", "⚡", "#7c3aed", "#f3f0ff"
-                deploy_perm = "CONSIDER PROFIT HARVEST → cash"
+                deploy_perm = "PROFIT HARVEST → peel tactical back to cash"
             elif pct >= 15:
                 sys_state, sys_icon, sys_color, sys_bg = "EXTENDED", "📈", "#2563eb", "#eff6ff"
                 deploy_perm = "MONITOR — approaching harvest zone"
+            elif pct <= -5 and (bpct is None or bpct > 40):
+                # EMA dipped but breadth hasn't confirmed — false start filter
+                sys_state, sys_icon, sys_color, sys_bg = "CAUTION", "⚠️", "#a76a00", "#fff6dd"
+                deploy_perm = "EMA DIPPED — BREADTH NOT CONFIRMED, HOLD"
             else:
                 sys_state, sys_icon, sys_color, sys_bg = "NORMAL", "🟢", "#216c30", "#eaf7ed"
                 deploy_perm = "HOLD / WAIT FOR RULE TRIGGER"
@@ -534,29 +617,49 @@ with tab_cockpit:
                 f'<div style="font-size:12px;color:#444">Deployment permission: <strong>{deploy_perm}</strong></div>'
                 f'</div>', unsafe_allow_html=True)
 
-            # Nifty metrics row
-            nm1, nm2, nm3 = st.columns(3)
+            # Nifty metrics row — 4 cols now (added breadth)
+            nm1, nm2, nm3, nm4 = st.columns(4)
             nm1.metric("Nifty 50", f"{nifty['price']:,.0f}", delta=f"{nifty['daily_chg']:+.2f}%")
             nm2.metric("200 EMA", f"{nifty['ema200']:,.0f}")
             ema_delta_color = "inverse" if pct < 0 else "normal"
             nm3.metric("vs 200 EMA", f"{pct:+.2f}%",
                        delta="below" if pct < 0 else "above", delta_color=ema_delta_color)
+            if breadth:
+                b_color = "inverse" if breadth["pct_above"] < 50 else "normal"
+                if breadth["source"] == "yfinance":
+                    b_delta = f'{breadth["above_count"]}/{breadth["total"]} above 200 DMA'
+                    b_label = "Breadth (yf)"
+                else:
+                    b_delta = f'P&F {breadth["source"]} · {breadth["date"]}'
+                    b_label = "P&F Breadth"
+                nm4.metric(b_label, f'{breadth["pct_above"]}%',
+                           delta=b_delta, delta_color=b_color)
+            else:
+                nm4.metric("Breadth", "—", delta="unavailable")
 
-            # Tier ladder visualization
+            # Tier ladder visualization — now shows BOTH conditions
             st.markdown("")
-            st.markdown("**Deployment Ladder**")
+            st.markdown("**Deployment Ladder** <span style='font-size:11px;color:#888'>(dual-condition: EMA + breadth)</span>",
+                        unsafe_allow_html=True)
             for tier in LADDER_TIERS:
                 thr = tier["threshold"]
-                is_active = pct <= thr
-                is_current = is_active and (tier["tier"] == 1 or pct > LADDER_TIERS[tier["tier"] - 2]["threshold"])
-                # Compute trigger price
+                bmax = tier["breadth_max"]
+                ema_hit = pct <= thr
+                breadth_hit = bpct is not None and bpct <= bmax
+                both_met = ema_hit and breadth_hit
                 trigger_price = nifty["ema200"] * (1 + thr / 100)
+
+                # Check if this is the "current" active tier
+                is_current = both_met and (tier["tier"] == 1 or not (
+                    pct <= LADDER_TIERS[tier["tier"] - 2]["threshold"] and
+                    (bpct is not None and bpct <= LADDER_TIERS[tier["tier"] - 2]["breadth_max"])
+                ))
 
                 if is_current:
                     row_bg = f"{sys_color}15"
                     row_border = sys_color
                     marker = "▶"
-                elif is_active:
+                elif both_met:
                     row_bg = "#eaf7ed"
                     row_border = GREEN
                     marker = "✅"
@@ -565,13 +668,26 @@ with tab_cockpit:
                     row_border = "#e5e7eb"
                     marker = "⬜"
 
+                # Status pills for each condition
+                ema_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
+                            f'background:{"#dcfce7" if ema_hit else "#fee2e2"};'
+                            f'color:{"#166534" if ema_hit else "#991b1b"}">EMA {"✓" if ema_hit else "✗"}</span>')
+                breadth_pill_color = "#dcfce7" if breadth_hit else "#fee2e2" if bpct is not None else "#f3f4f6"
+                breadth_pill_text = "#166534" if breadth_hit else "#991b1b" if bpct is not None else "#888"
+                breadth_status = "✓" if breadth_hit else "✗" if bpct is not None else "?"
+                breadth_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
+                                f'background:{breadth_pill_color};color:{breadth_pill_text}">'
+                                f'B≤{bmax}% {breadth_status}</span>')
+
                 st.markdown(
-                    f'<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin:2px 0;'
+                    f'<div style="display:flex;align-items:center;gap:6px;padding:6px 10px;margin:2px 0;'
                     f'border-radius:6px;background:{row_bg};border-left:3px solid {row_border}">'
                     f'<span style="font-size:14px">{marker}</span>'
-                    f'<span style="min-width:30px;font-weight:700;font-size:13px">T{tier["tier"]}</span>'
-                    f'<span style="flex:1;font-size:12px;color:#444">{thr}% → Deploy {tier["deploy_pct"]}% into Midcap 150</span>'
-                    f'<span style="font-size:11px;color:{MUTED};min-width:80px;text-align:right">₹{trigger_price:,.0f}</span>'
+                    f'<span style="min-width:26px;font-weight:700;font-size:13px">T{tier["tier"]}</span>'
+                    f'<span style="font-size:12px;color:#444">{thr}%</span>'
+                    f'{ema_pill}{breadth_pill}'
+                    f'<span style="flex:1;font-size:11px;color:#666;text-align:right">→ {tier["deploy_pct"]}% Midcap 150</span>'
+                    f'<span style="font-size:11px;color:{MUTED};min-width:70px;text-align:right">₹{trigger_price:,.0f}</span>'
                     f'</div>', unsafe_allow_html=True)
 
             # Capital architecture
@@ -1379,6 +1495,121 @@ with tab_system:
     do2.markdown("**4. Trade History** — `trade_history`\n\nClosed trades with full entry/exit details")
     do3.markdown("**5. Fundamentals** — `fundamentals_snapshots`\n\nPE, ROE, ROCE, margins, growth")
     do3.markdown("**6. Alert Log** — `alert_log`\n\nSent alerts for cooldown deduplication")
+
+    st.divider()
+
+    # ── P&F Breadth Management ─────────────────────────────
+    st.markdown("#### 📊 P&F X-Percent Breadth")
+    st.caption("Authoritative breadth signal for Tactical Ladder (from Rzone P&F charts, 1% box / 3-box reversal)")
+
+    bread_tab1, bread_tab2, bread_tab3 = st.tabs(["📝 Add Reading", "📋 History", "📤 Import CSV"])
+
+    with bread_tab1:
+        with st.form("add_breadth"):
+            bc1, bc2, bc3 = st.columns(3)
+            b_date = bc1.date_input("Reading Date", value=datetime.now())
+            b_val = bc2.number_input("Breadth %", min_value=0.0, max_value=100.0,
+                                      value=25.0, step=0.01, format="%.2f")
+            b_avg = bc3.number_input("Avg Breadth %", min_value=0.0, max_value=100.0,
+                                      value=20.0, step=0.01, format="%.2f")
+            b_notes = st.text_input("Notes (optional)", placeholder="e.g. Weekly evaluation")
+            b_submit = st.form_submit_button("💾 Save Reading")
+
+        if b_submit:
+            try:
+                _sb().table("breadth_readings").upsert({
+                    "reading_date": str(b_date),
+                    "source": "rzone_pnf",
+                    "breadth_pct": b_val,
+                    "avg_breadth_pct": b_avg,
+                    "notes": b_notes or None,
+                }, on_conflict="reading_date,source").execute()
+                st.success(f"✅ Saved breadth {b_val}% for {b_date}")
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+
+    with bread_tab2:
+        try:
+            hist_rows = _sb().table("breadth_readings").select("*") \
+                .order("reading_date", desc=True).limit(52).execute().data or []
+            if hist_rows:
+                bdf = pd.DataFrame(hist_rows)[["reading_date", "breadth_pct", "avg_breadth_pct", "source", "notes"]]
+                bdf.columns = ["Date", "Breadth %", "Avg %", "Source", "Notes"]
+                st.dataframe(bdf, use_container_width=True, hide_index=True)
+
+                # Mini sparkline of breadth history
+                if len(hist_rows) > 2:
+                    bdf_chart = pd.DataFrame(hist_rows).sort_values("reading_date")
+                    fig_b = go.Figure()
+                    fig_b.add_trace(go.Scatter(
+                        x=bdf_chart["reading_date"],
+                        y=bdf_chart["breadth_pct"].astype(float),
+                        mode="lines+markers", name="P&F Breadth",
+                        line=dict(color="#355ec9", width=2), marker=dict(size=5),
+                    ))
+                    if bdf_chart["avg_breadth_pct"].notna().any():
+                        fig_b.add_trace(go.Scatter(
+                            x=bdf_chart["reading_date"],
+                            y=bdf_chart["avg_breadth_pct"].astype(float),
+                            mode="lines", name="Average",
+                            line=dict(color="#eb6834", width=1, dash="dash"),
+                        ))
+                    # Tier reference lines
+                    for thr, lbl in [(40, "T1"), (35, "T2"), (30, "T3"), (25, "T4"), (20, "T5")]:
+                        fig_b.add_hline(y=thr, line_dash="dot", line_color="#ccc", line_width=1,
+                                        annotation_text=lbl, annotation_position="right",
+                                        annotation_font_size=9, annotation_font_color="#aaa")
+                    fig_b.update_layout(
+                        height=250, margin=dict(l=0, r=0, t=10, b=10),
+                        xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#eef0f3", title="%"),
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    )
+                    st.plotly_chart(fig_b, use_container_width=True)
+            else:
+                st.info("No breadth readings yet.")
+        except Exception as e:
+            st.warning(f"Could not load breadth history: {e}")
+
+    with bread_tab3:
+        st.markdown("Upload a CSV exported from **Rzone → Breadth → EXPORT**.")
+        st.caption("Expected columns: `Date`, `Breadth Value` (or `X Percent Breadth`), and optionally `Average Value`.")
+        csv_file = st.file_uploader("Choose CSV file", type=["csv"], key="breadth_csv")
+        if csv_file:
+            try:
+                raw = pd.read_csv(csv_file)
+                st.dataframe(raw.head(), use_container_width=True)
+
+                # Auto-detect columns
+                date_col = next((c for c in raw.columns if "date" in c.lower()), None)
+                val_col = next((c for c in raw.columns if "breadth" in c.lower() or "x percent" in c.lower()), None)
+                avg_col = next((c for c in raw.columns if "average" in c.lower() or "avg" in c.lower()), None)
+
+                if date_col and val_col:
+                    st.success(f"Detected: Date=`{date_col}`, Breadth=`{val_col}`" +
+                               (f", Avg=`{avg_col}`" if avg_col else ""))
+                    if st.button(f"📥 Import {len(raw)} rows", type="primary"):
+                        imported = 0
+                        for _, row in raw.iterrows():
+                            try:
+                                rd = pd.to_datetime(row[date_col]).strftime("%Y-%m-%d")
+                                bv = float(row[val_col])
+                                av = float(row[avg_col]) if avg_col and pd.notna(row.get(avg_col)) else None
+                                _sb().table("breadth_readings").upsert({
+                                    "reading_date": rd, "source": "rzone_pnf",
+                                    "breadth_pct": bv, "avg_breadth_pct": av,
+                                    "notes": "Rzone CSV import",
+                                }, on_conflict="reading_date,source").execute()
+                                imported += 1
+                            except Exception:
+                                continue
+                        st.success(f"✅ Imported {imported}/{len(raw)} readings")
+                        st.cache_data.clear()
+                else:
+                    st.warning("Could not auto-detect columns. Ensure CSV has a `Date` column and a breadth value column.")
+            except Exception as e:
+                st.error(f"CSV parse error: {e}")
 
     st.divider()
 
