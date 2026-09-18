@@ -10,6 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timezone, timedelta
 import math
+import yfinance as yf
 
 # ── Config ──────────────────────────────────────────────────
 st.set_page_config(
@@ -57,6 +58,58 @@ def load():
 
 
 D = load()
+
+
+# ── Nifty 50 Market Regime ──────────────────────────────────
+@st.cache_data(ttl=900)  # 15-min cache
+def fetch_nifty_regime():
+    """Fetch Nifty 50 price + 200 EMA for Tactical Ladder framework."""
+    try:
+        nifty = yf.Ticker("^NSEI")
+        hist = nifty.history(period="2y")
+        if hist.empty:
+            return None
+        hist["EMA200"] = hist["Close"].ewm(span=200, adjust=False).mean()
+        latest = hist.iloc[-1]
+        prev = hist.iloc[-2] if len(hist) > 1 else latest
+        nifty_close = float(latest["Close"])
+        ema200 = float(latest["EMA200"])
+        pct_from_ema = ((nifty_close - ema200) / ema200) * 100
+        daily_chg = ((nifty_close - float(prev["Close"])) / float(prev["Close"])) * 100
+
+        # 200 EMA history for chart
+        chart_df = hist[["Close", "EMA200"]].tail(120).reset_index()
+        chart_df.columns = ["Date", "Close", "EMA200"]
+        chart_df["Date"] = chart_df["Date"].dt.strftime("%Y-%m-%d")
+
+        return {
+            "price": nifty_close,
+            "ema200": ema200,
+            "pct_from_ema": pct_from_ema,
+            "daily_chg": daily_chg,
+            "date": hist.index[-1].strftime("%d %b %Y"),
+            "chart": chart_df,
+        }
+    except Exception:
+        return None
+
+
+nifty = fetch_nifty_regime()
+
+# Tactical Ladder tiers
+LADDER_TIERS = [
+    {"tier": 1, "threshold": -5.0,  "deploy_pct": 8, "label": "Tier 1 — Light correction"},
+    {"tier": 2, "threshold": -10.0, "deploy_pct": 8, "label": "Tier 2 — Moderate correction"},
+    {"tier": 3, "threshold": -15.0, "deploy_pct": 8, "label": "Tier 3 — Deep correction"},
+    {"tier": 4, "threshold": -20.0, "deploy_pct": 8, "label": "Tier 4 — Severe correction"},
+    {"tier": 5, "threshold": -25.0, "deploy_pct": 8, "label": "Tier 5 — Panic lows"},
+]
+
+CAPITAL_ARCH = [
+    {"name": "Core NiftyBees", "pct": 35, "desc": "Large-cap anchor"},
+    {"name": "Core Nifty Midcap 150", "pct": 25, "desc": "Growth anchor"},
+    {"name": "Tactical Cash Reserve", "pct": 40, "desc": "Liquid/arb funds ~6.5% p.a."},
+]
 
 active = [p for p in D["pos"] if p.get("status") == "active"]
 exited = [p for p in D["pos"] if p.get("status") == "exited"]
@@ -441,119 +494,192 @@ with tab_cockpit:
     md_left, md_right = st.columns(2)
 
     with md_left:
-        st.markdown("#### 📡 Market & Deployment State")
-        # Deployment ratio
-        # We don't have a "total capital" field — use invested as deployed, estimate cash from sleeve rules
-        sleeve_counts = {}
-        for p in positions:
-            sleeve_counts[p["sleeve"]] = sleeve_counts.get(p["sleeve"], 0) + 1
+        st.markdown("#### 📡 Market / Deployment State")
+        st.caption("Dual-Asset Tactical Ladder — rules-based market engine")
 
-        anchor_val = sum(p["current_value"] for p in positions if p["sleeve"] == "Anchor")
-        power_val = sum(p["current_value"] for p in positions if p["sleeve"] == "Power Sleeve")
-        tracker_val = sum(p["current_value"] for p in positions if p["sleeve"] == "Tracker")
-        multi_val = sum(p["current_value"] for p in positions if p["sleeve"] == "Multibagger List")
+        if nifty:
+            pct = nifty["pct_from_ema"]
 
-        # State heuristic: if >70% in Anchor → defensive; if Power > 30% → aggressive
-        anchor_pct = (anchor_val / total_value * 100) if total_value else 0
-        power_pct = (power_val / total_value * 100) if total_value else 0
+            # Determine system state
+            if pct <= -25:
+                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY ALL", "🔴", "#a92e2e", "#feecec"
+                deploy_perm = "FULL DEPLOYMENT — ALL 5 TIERS"
+            elif pct <= -20:
+                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T4", "🟠", "#c05621", "#fff0e6"
+                deploy_perm = "DEPLOY TIER 4 — 32% tactical deployed"
+            elif pct <= -15:
+                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T3", "🟡", "#a76a00", "#fff6dd"
+                deploy_perm = "DEPLOY TIER 3 — 24% tactical deployed"
+            elif pct <= -10:
+                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T2", "🟡", "#a76a00", "#fff6dd"
+                deploy_perm = "DEPLOY TIER 2 — 16% tactical deployed"
+            elif pct <= -5:
+                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T1", "🟡", "#a76a00", "#fff6dd"
+                deploy_perm = "DEPLOY TIER 1 — 8% tactical deployed"
+            elif pct >= 20:
+                sys_state, sys_icon, sys_color, sys_bg = "OVEREXTENDED", "⚡", "#7c3aed", "#f3f0ff"
+                deploy_perm = "CONSIDER PROFIT HARVEST → cash"
+            elif pct >= 15:
+                sys_state, sys_icon, sys_color, sys_bg = "EXTENDED", "📈", "#2563eb", "#eff6ff"
+                deploy_perm = "MONITOR — approaching harvest zone"
+            else:
+                sys_state, sys_icon, sys_color, sys_bg = "NORMAL", "🟢", "#216c30", "#eaf7ed"
+                deploy_perm = "HOLD / WAIT FOR RULE TRIGGER"
 
-        if anchor_pct > 70:
-            deploy_state = "Defensive"
-            deploy_icon = "🛡️"
-        elif power_pct > 30:
-            deploy_state = "Aggressive"
-            deploy_icon = "⚡"
-        else:
-            deploy_state = "Balanced"
-            deploy_icon = "⚖️"
+            # State badge
+            st.markdown(
+                f'<div style="background:{sys_bg};border:1px solid {sys_color}30;border-radius:10px;padding:14px 16px;margin-bottom:10px">'
+                f'<div style="font-size:11px;color:{MUTED};text-transform:uppercase;letter-spacing:0.04em">Current portfolio state</div>'
+                f'<div style="font-size:22px;font-weight:800;color:{sys_color};margin:4px 0">{sys_icon} {sys_state}</div>'
+                f'<div style="font-size:12px;color:#444">Deployment permission: <strong>{deploy_perm}</strong></div>'
+                f'</div>', unsafe_allow_html=True)
 
-        st.markdown(f"**Deployment Stance:** {deploy_icon} {deploy_state}")
-        st.markdown("")
+            # Nifty metrics row
+            nm1, nm2, nm3 = st.columns(3)
+            nm1.metric("Nifty 50", f"{nifty['price']:,.0f}", delta=f"{nifty['daily_chg']:+.2f}%")
+            nm2.metric("200 EMA", f"{nifty['ema200']:,.0f}")
+            ema_delta_color = "inverse" if pct < 0 else "normal"
+            nm3.metric("vs 200 EMA", f"{pct:+.2f}%",
+                       delta="below" if pct < 0 else "above", delta_color=ema_delta_color)
 
-        # Sleeve deployment bars
-        sleeve_deploy = [
-            ("Anchor", anchor_val, anchor_pct, SLEEVE_COLORS["Anchor"]),
-            ("Power Sleeve", power_val, power_pct, SLEEVE_COLORS["Power Sleeve"]),
-            ("Multibagger List", multi_val, (multi_val / total_value * 100) if total_value else 0, SLEEVE_COLORS["Multibagger List"]),
-            ("Tracker", tracker_val, (tracker_val / total_value * 100) if total_value else 0, SLEEVE_COLORS["Tracker"]),
-        ]
-        for sl_name, sl_val, sl_pct, sl_col in sleeve_deploy:
-            if sl_val > 0:
+            # Tier ladder visualization
+            st.markdown("")
+            st.markdown("**Deployment Ladder**")
+            for tier in LADDER_TIERS:
+                thr = tier["threshold"]
+                is_active = pct <= thr
+                is_current = is_active and (tier["tier"] == 1 or pct > LADDER_TIERS[tier["tier"] - 2]["threshold"])
+                # Compute trigger price
+                trigger_price = nifty["ema200"] * (1 + thr / 100)
+
+                if is_current:
+                    row_bg = f"{sys_color}15"
+                    row_border = sys_color
+                    marker = "▶"
+                elif is_active:
+                    row_bg = "#eaf7ed"
+                    row_border = GREEN
+                    marker = "✅"
+                else:
+                    row_bg = "#f8f9fb"
+                    row_border = "#e5e7eb"
+                    marker = "⬜"
+
                 st.markdown(
-                    f'<div style="display:flex;align-items:center;gap:8px;margin:4px 0">'
-                    f'<span style="min-width:110px;font-size:13px">{sl_name}</span>'
-                    f'<div style="flex:1;height:10px;background:#eef1f5;border-radius:5px;overflow:hidden">'
-                    f'<div style="width:{sl_pct}%;height:100%;background:{sl_col};border-radius:5px"></div></div>'
-                    f'<span style="min-width:50px;text-align:right;font-size:12px;font-weight:600">{sl_pct:.1f}%</span>'
+                    f'<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin:2px 0;'
+                    f'border-radius:6px;background:{row_bg};border-left:3px solid {row_border}">'
+                    f'<span style="font-size:14px">{marker}</span>'
+                    f'<span style="min-width:30px;font-weight:700;font-size:13px">T{tier["tier"]}</span>'
+                    f'<span style="flex:1;font-size:12px;color:#444">{thr}% → Deploy {tier["deploy_pct"]}% into Midcap 150</span>'
+                    f'<span style="font-size:11px;color:{MUTED};min-width:80px;text-align:right">₹{trigger_price:,.0f}</span>'
                     f'</div>', unsafe_allow_html=True)
 
-        st.markdown("")
-        st.markdown(f"**Active Sectors:** {len(set(p['sector'] for p in positions))} · "
-                    f"**Positions:** {len(positions)} · "
-                    f"**Avg Weight:** {100/len(positions):.1f}%" if positions else "")
+            # Capital architecture
+            st.markdown("")
+            st.markdown("**Capital Architecture**")
+            arch_colors = ["#355ec9", "#1baf7a", "#eda100"]
+            for i, ca in enumerate(CAPITAL_ARCH):
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0">'
+                    f'<div style="width:10px;height:10px;border-radius:3px;background:{arch_colors[i]}"></div>'
+                    f'<span style="font-size:13px;min-width:160px"><strong>{ca["name"]}</strong></span>'
+                    f'<span style="font-size:13px;font-weight:700;min-width:35px">{ca["pct"]}%</span>'
+                    f'<span style="font-size:11px;color:{MUTED}">{ca["desc"]}</span>'
+                    f'</div>', unsafe_allow_html=True)
+
+        else:
+            st.warning("⚠️ Could not fetch Nifty 50 data — check yfinance connection.")
+            st.caption("The Tactical Ladder requires live Nifty 50 price and 200 EMA.")
 
     with md_right:
-        st.markdown("#### 📈 Portfolio Equity Curve")
-        st.caption("Constructed from entry dates and current values")
-
-        # Build equity curve from lots sorted by date
-        all_lots = sorted(D["lots"], key=lambda l: l.get("lot_date") or "9999")
-        if all_lots:
-            cumulative = 0
-            curve_dates = []
-            curve_invested = []
-            curve_value = []
-            lot_events = {}  # date → total cost added
-
-            for lot in all_lots:
-                ld = lot.get("lot_date")
-                if not ld:
-                    continue
-                lqty = f(lot.get("qty")) or 0
-                lprice = f(lot.get("price")) or 0
-                lot_cost = lqty * lprice
-                lot_events[ld] = lot_events.get(ld, 0) + lot_cost
-
-            running = 0
-            for date_str in sorted(lot_events.keys()):
-                running += lot_events[date_str]
-                curve_dates.append(date_str)
-                curve_invested.append(running)
-
-            # Add today as last point with current value
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            curve_dates.append(today_str)
-            curve_invested.append(total_invested)
-
-            fig_equity = go.Figure()
-            fig_equity.add_trace(go.Scatter(
-                x=curve_dates, y=curve_invested,
-                mode='lines+markers',
-                name='Invested',
-                line=dict(color=MUTED, width=2, dash='dot'),
-                marker=dict(size=5),
-                hovertemplate='%{x}<br>Invested: ₹%{y:,.0f}<extra></extra>',
+        # Nifty vs 200 EMA chart
+        if nifty and nifty.get("chart") is not None:
+            st.markdown("#### 📈 Nifty 50 vs 200 EMA")
+            st.caption("Tactical Ladder trigger zones — 120 trading days")
+            cdf = nifty["chart"]
+            fig_nifty = go.Figure()
+            fig_nifty.add_trace(go.Scatter(
+                x=cdf["Date"], y=cdf["Close"], mode='lines',
+                name='Nifty 50', line=dict(color="#355ec9", width=2),
+                hovertemplate='%{x}<br>Nifty: %{y:,.0f}<extra></extra>',
             ))
-            # Current value line (from invested to today's value)
-            fig_equity.add_trace(go.Scatter(
-                x=[curve_dates[-1]], y=[total_value],
-                mode='markers',
-                name=f'Current Value ({fmt(total_value)})',
-                marker=dict(size=12, color=GREEN if total_value >= total_invested else RED,
-                           symbol='diamond'),
-                hovertemplate='Today<br>Value: ₹%{y:,.0f}<extra></extra>',
+            fig_nifty.add_trace(go.Scatter(
+                x=cdf["Date"], y=cdf["EMA200"], mode='lines',
+                name='200 EMA', line=dict(color="#eb6834", width=2, dash='dash'),
+                hovertemplate='%{x}<br>200 EMA: %{y:,.0f}<extra></extra>',
             ))
-            fig_equity.update_layout(
-                height=280, margin=dict(l=0, r=0, t=10, b=10),
+            # Add tier trigger lines
+            for tier in LADDER_TIERS[:3]:  # Show T1-T3 lines
+                trigger = nifty["ema200"] * (1 + tier["threshold"] / 100)
+                fig_nifty.add_hline(y=trigger, line_dash="dot", line_color="#c83b3b",
+                                    line_width=1, opacity=0.4,
+                                    annotation_text=f"T{tier['tier']} ({tier['threshold']}%)",
+                                    annotation_position="left",
+                                    annotation_font_size=9, annotation_font_color="#999")
+            fig_nifty.update_layout(
+                height=300, margin=dict(l=0, r=0, t=10, b=10),
                 xaxis=dict(showgrid=False, title=None),
-                yaxis=dict(showgrid=True, gridcolor="#eef0f3", title="₹"),
+                yaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None),
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 showlegend=True,
             )
-            st.plotly_chart(fig_equity, use_container_width=True)
+            st.plotly_chart(fig_nifty, use_container_width=True)
         else:
-            st.caption("No lot data yet — equity curve needs lot entries with dates.")
+            st.info("Nifty data unavailable — install yfinance for live chart.")
+
+    # Portfolio Equity Curve — full width below
+    st.markdown("#### 📈 Portfolio Equity Curve")
+    st.caption("Cumulative capital deployed over time from lot entries")
+
+    all_lots = sorted(D["lots"], key=lambda l: l.get("lot_date") or "9999")
+    if all_lots:
+        curve_dates = []
+        curve_invested = []
+        lot_events = {}
+
+        for lot in all_lots:
+            ld = lot.get("lot_date")
+            if not ld:
+                continue
+            lqty = f(lot.get("qty")) or 0
+            lprice = f(lot.get("price")) or 0
+            lot_cost = lqty * lprice
+            lot_events[ld] = lot_events.get(ld, 0) + lot_cost
+
+        running = 0
+        for date_str in sorted(lot_events.keys()):
+            running += lot_events[date_str]
+            curve_dates.append(date_str)
+            curve_invested.append(running)
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        curve_dates.append(today_str)
+        curve_invested.append(total_invested)
+
+        fig_equity = go.Figure()
+        fig_equity.add_trace(go.Scatter(
+            x=curve_dates, y=curve_invested,
+            mode='lines+markers', name='Invested',
+            line=dict(color=MUTED, width=2, dash='dot'), marker=dict(size=5),
+            hovertemplate='%{x}<br>Invested: ₹%{y:,.0f}<extra></extra>',
+        ))
+        fig_equity.add_trace(go.Scatter(
+            x=[curve_dates[-1]], y=[total_value],
+            mode='markers', name=f'Current Value ({fmt(total_value)})',
+            marker=dict(size=12, color=GREEN if total_value >= total_invested else RED, symbol='diamond'),
+            hovertemplate='Today<br>Value: ₹%{y:,.0f}<extra></extra>',
+        ))
+        fig_equity.update_layout(
+            height=220, margin=dict(l=0, r=0, t=10, b=10),
+            xaxis=dict(showgrid=False, title=None),
+            yaxis=dict(showgrid=True, gridcolor="#eef0f3", title="₹"),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_equity, use_container_width=True)
+    else:
+        st.caption("No lot data yet — equity curve needs lot entries with dates.")
 
     st.divider()
 
