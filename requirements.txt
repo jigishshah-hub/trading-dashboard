@@ -6,4 +6,5 @@ streamlit
 supabase
 pandas
 beautifulsoup4
+feedparser
 requests
