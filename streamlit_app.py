@@ -437,6 +437,126 @@ with tab_cockpit:
 
     st.divider()
 
+    # Market / Deployment State + Equity Curve
+    md_left, md_right = st.columns(2)
+
+    with md_left:
+        st.markdown("#### 📡 Market & Deployment State")
+        # Deployment ratio
+        # We don't have a "total capital" field — use invested as deployed, estimate cash from sleeve rules
+        sleeve_counts = {}
+        for p in positions:
+            sleeve_counts[p["sleeve"]] = sleeve_counts.get(p["sleeve"], 0) + 1
+
+        anchor_val = sum(p["current_value"] for p in positions if p["sleeve"] == "Anchor")
+        power_val = sum(p["current_value"] for p in positions if p["sleeve"] == "Power Sleeve")
+        tracker_val = sum(p["current_value"] for p in positions if p["sleeve"] == "Tracker")
+        multi_val = sum(p["current_value"] for p in positions if p["sleeve"] == "Multibagger List")
+
+        # State heuristic: if >70% in Anchor → defensive; if Power > 30% → aggressive
+        anchor_pct = (anchor_val / total_value * 100) if total_value else 0
+        power_pct = (power_val / total_value * 100) if total_value else 0
+
+        if anchor_pct > 70:
+            deploy_state = "Defensive"
+            deploy_icon = "🛡️"
+        elif power_pct > 30:
+            deploy_state = "Aggressive"
+            deploy_icon = "⚡"
+        else:
+            deploy_state = "Balanced"
+            deploy_icon = "⚖️"
+
+        st.markdown(f"**Deployment Stance:** {deploy_icon} {deploy_state}")
+        st.markdown("")
+
+        # Sleeve deployment bars
+        sleeve_deploy = [
+            ("Anchor", anchor_val, anchor_pct, SLEEVE_COLORS["Anchor"]),
+            ("Power Sleeve", power_val, power_pct, SLEEVE_COLORS["Power Sleeve"]),
+            ("Multibagger List", multi_val, (multi_val / total_value * 100) if total_value else 0, SLEEVE_COLORS["Multibagger List"]),
+            ("Tracker", tracker_val, (tracker_val / total_value * 100) if total_value else 0, SLEEVE_COLORS["Tracker"]),
+        ]
+        for sl_name, sl_val, sl_pct, sl_col in sleeve_deploy:
+            if sl_val > 0:
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:8px;margin:4px 0">'
+                    f'<span style="min-width:110px;font-size:13px">{sl_name}</span>'
+                    f'<div style="flex:1;height:10px;background:#eef1f5;border-radius:5px;overflow:hidden">'
+                    f'<div style="width:{sl_pct}%;height:100%;background:{sl_col};border-radius:5px"></div></div>'
+                    f'<span style="min-width:50px;text-align:right;font-size:12px;font-weight:600">{sl_pct:.1f}%</span>'
+                    f'</div>', unsafe_allow_html=True)
+
+        st.markdown("")
+        st.markdown(f"**Active Sectors:** {len(set(p['sector'] for p in positions))} · "
+                    f"**Positions:** {len(positions)} · "
+                    f"**Avg Weight:** {100/len(positions):.1f}%" if positions else "")
+
+    with md_right:
+        st.markdown("#### 📈 Portfolio Equity Curve")
+        st.caption("Constructed from entry dates and current values")
+
+        # Build equity curve from lots sorted by date
+        all_lots = sorted(D["lots"], key=lambda l: l.get("lot_date") or "9999")
+        if all_lots:
+            cumulative = 0
+            curve_dates = []
+            curve_invested = []
+            curve_value = []
+            lot_events = {}  # date → total cost added
+
+            for lot in all_lots:
+                ld = lot.get("lot_date")
+                if not ld:
+                    continue
+                lqty = f(lot.get("qty")) or 0
+                lprice = f(lot.get("price")) or 0
+                lot_cost = lqty * lprice
+                lot_events[ld] = lot_events.get(ld, 0) + lot_cost
+
+            running = 0
+            for date_str in sorted(lot_events.keys()):
+                running += lot_events[date_str]
+                curve_dates.append(date_str)
+                curve_invested.append(running)
+
+            # Add today as last point with current value
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            curve_dates.append(today_str)
+            curve_invested.append(total_invested)
+
+            fig_equity = go.Figure()
+            fig_equity.add_trace(go.Scatter(
+                x=curve_dates, y=curve_invested,
+                mode='lines+markers',
+                name='Invested',
+                line=dict(color=MUTED, width=2, dash='dot'),
+                marker=dict(size=5),
+                hovertemplate='%{x}<br>Invested: ₹%{y:,.0f}<extra></extra>',
+            ))
+            # Current value line (from invested to today's value)
+            fig_equity.add_trace(go.Scatter(
+                x=[curve_dates[-1]], y=[total_value],
+                mode='markers',
+                name=f'Current Value ({fmt(total_value)})',
+                marker=dict(size=12, color=GREEN if total_value >= total_invested else RED,
+                           symbol='diamond'),
+                hovertemplate='Today<br>Value: ₹%{y:,.0f}<extra></extra>',
+            ))
+            fig_equity.update_layout(
+                height=280, margin=dict(l=0, r=0, t=10, b=10),
+                xaxis=dict(showgrid=False, title=None),
+                yaxis=dict(showgrid=True, gridcolor="#eef0f3", title="₹"),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                showlegend=True,
+            )
+            st.plotly_chart(fig_equity, use_container_width=True)
+        else:
+            st.caption("No lot data yet — equity curve needs lot entries with dates.")
+
+    st.divider()
+
     # Sleeve P&L — expandable
     st.markdown("#### Sleeve Performance")
     st.caption("Click a sleeve to expand individual positions")
@@ -863,6 +983,124 @@ with tab_perf:
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     )
     st.plotly_chart(fig_sleeve, use_container_width=True)
+
+    st.divider()
+
+    # Trading System Statistics
+    ts_left, ts_right = st.columns(2)
+
+    with ts_left:
+        st.markdown("#### 🎯 Trading System Statistics")
+        st.caption("Computed from closed trades — builds as your track record grows")
+
+        closed = D["closed"]
+        if closed:
+            # Core stats
+            total_trades = len(closed)
+            win_trades = [t for t in closed if (f(t.get("realized_return_pct")) or 0) > 0]
+            loss_trades = [t for t in closed if (f(t.get("realized_return_pct")) or 0) <= 0]
+            win_count = len(win_trades)
+            loss_count = len(loss_trades)
+            win_rate = (win_count / total_trades * 100) if total_trades else 0
+
+            win_returns = [f(t.get("realized_return_pct")) or 0 for t in win_trades]
+            loss_returns = [f(t.get("realized_return_pct")) or 0 for t in loss_trades]
+
+            avg_win = (sum(win_returns) / len(win_returns)) if win_returns else 0
+            avg_loss = (sum(loss_returns) / len(loss_returns)) if loss_returns else 0
+            # Payoff ratio (avg win / avg loss magnitude)
+            payoff = (avg_win / abs(avg_loss)) if avg_loss != 0 else float('inf')
+            # Expectancy = (win% × avg_win) - (loss% × avg_loss_magnitude)
+            expectancy = (win_rate / 100 * avg_win) - ((1 - win_rate / 100) * abs(avg_loss))
+
+            # Largest win / loss
+            all_returns = [f(t.get("realized_return_pct")) or 0 for t in closed]
+            max_win = max(all_returns) if all_returns else 0
+            max_loss = min(all_returns) if all_returns else 0
+
+            # Exit reason breakdown
+            exit_reasons = {}
+            for t in closed:
+                reason = t.get("exit_reason") or "Unknown"
+                exit_reasons[reason] = exit_reasons.get(reason, 0) + 1
+
+            # Display
+            stat_rows = [
+                {"Metric": "Total Trades", "Value": str(total_trades)},
+                {"Metric": "Win Rate", "Value": f"{win_rate:.0f}% ({win_count}W / {loss_count}L)"},
+                {"Metric": "Avg Win", "Value": f"+{avg_win:.1f}%"},
+                {"Metric": "Avg Loss", "Value": f"{avg_loss:.1f}%"},
+                {"Metric": "Payoff Ratio", "Value": f"{payoff:.2f}x" if payoff != float('inf') else "∞ (no losses)"},
+                {"Metric": "Expectancy", "Value": f"{expectancy:+.2f}% per trade"},
+                {"Metric": "Largest Win", "Value": f"+{max_win:.1f}%"},
+                {"Metric": "Largest Loss", "Value": f"{max_loss:.1f}%"},
+                {"Metric": "Avg Hold Period", "Value": f"{sum(hold_days)/len(hold_days):.0f} days" if hold_days else "—"},
+            ]
+            st.dataframe(pd.DataFrame(stat_rows), use_container_width=True, hide_index=True)
+
+            # Exit reason pie
+            if exit_reasons:
+                st.markdown("**Exit Reasons**")
+                fig_exit = go.Figure(data=go.Pie(
+                    labels=list(exit_reasons.keys()),
+                    values=list(exit_reasons.values()),
+                    hole=0.4,
+                    marker_colors=SECTOR_COLORS[:len(exit_reasons)],
+                    textinfo='label+value',
+                    hovertemplate='%{label}: %{value} trades<extra></extra>',
+                ))
+                fig_exit.update_layout(
+                    height=200, margin=dict(l=0, r=0, t=10, b=10),
+                    showlegend=False,
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_exit, use_container_width=True)
+        else:
+            st.info("No closed trades yet — statistics build as you close positions.")
+
+    with ts_right:
+        st.markdown("#### 📊 Benchmark & Drawdown")
+        st.caption("Portfolio vs Nifty 50 — requires price history feed")
+
+        # Current portfolio drawdown from peak (estimated from positions)
+        # Peak = sum of max(current_value, cost_basis) per position as rough proxy
+        peak_estimate = sum(max(p["current_value"], p["cost_basis"]) for p in positions)
+        if peak_estimate > 0:
+            dd_from_peak = ((total_value - peak_estimate) / peak_estimate * 100)
+            dd_color = RED if dd_from_peak < -5 else AMBER if dd_from_peak < 0 else GREEN
+
+            m1, m2 = st.columns(2)
+            m1.metric("Portfolio Value", fmt(total_value))
+            m2.metric("Est. Peak", fmt(peak_estimate))
+
+            st.markdown(
+                f'<div style="text-align:center;padding:16px;margin:8px 0;border-radius:10px;'
+                f'background:{dd_color}10;border:1px solid {dd_color}30">'
+                f'<div style="font-size:11px;text-transform:uppercase;color:{MUTED};letter-spacing:0.04em">Drawdown from Peak</div>'
+                f'<div style="font-size:28px;font-weight:800;color:{dd_color}">{dd_from_peak:+.1f}%</div>'
+                f'<div style="font-size:11px;color:{MUTED}">Estimated from position cost basis vs current</div>'
+                f'</div>', unsafe_allow_html=True)
+
+            st.markdown("")
+
+            # Sleeve-level drawdowns
+            st.markdown("**Sleeve Drawdowns**")
+            for sleeve_name in sorted(set(p["sleeve"] for p in positions)):
+                sl_pos = [p for p in positions if p["sleeve"] == sleeve_name]
+                sl_val = sum(p["current_value"] for p in sl_pos)
+                sl_peak = sum(max(p["current_value"], p["cost_basis"]) for p in sl_pos)
+                sl_dd = ((sl_val - sl_peak) / sl_peak * 100) if sl_peak else 0
+                sl_dd_col = RED if sl_dd < -5 else AMBER if sl_dd < 0 else GREEN
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0">'
+                    f'<span style="min-width:110px;font-size:13px">{sleeve_name}</span>'
+                    f'<span style="color:{sl_dd_col};font-weight:700;font-size:14px">{sl_dd:+.1f}%</span>'
+                    f'<span style="color:{MUTED};font-size:12px">({fmt(sl_val)} / {fmt(sl_peak)})</span>'
+                    f'</div>', unsafe_allow_html=True)
+
+        st.markdown("")
+        st.info("💡 **For full benchmark tracking** (portfolio vs Nifty 50 over time), connect a daily NAV/snapshot job. "
+                "This will enable time-series comparison, rolling alpha, and max drawdown history.")
 
 
 # ═══════════════════════════════════════════════════════════
