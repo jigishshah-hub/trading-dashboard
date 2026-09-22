@@ -54,7 +54,8 @@ def load():
         "news": sb.table("news_raw").select("*").order("published_at", desc=True).limit(200).execute().data or [],
         "research": sb.table("research_log").select("*").order("created_at", desc=True).execute().data or [],
         "fundsnap": sb.table("fundamentals_snapshots").select("*").order("pulled_at", desc=True).execute().data or [],
-        "breadth": sb.table("breadth_readings").select("*").order("reading_date", desc=True).limit(1).execute().data or [],
+        "breadth_1pct": sb.table("breadth_readings").select("*").eq("source", "rzone_pnf_1pct").order("reading_date", desc=True).limit(1).execute().data or [],
+        "breadth_025pct": sb.table("breadth_readings").select("*").eq("source", "rzone_pnf_025pct").order("reading_date", desc=True).limit(1).execute().data or [],
     }
 
 
@@ -151,17 +152,29 @@ def fetch_nifty50_breadth():
 breadth_yf = fetch_nifty50_breadth()
 
 # ── P&F Breadth from Supabase (authoritative) ─────────────
-# Latest Rzone P&F X-Percent Breadth reading stored in breadth_readings table.
+# Two P&F breadth sources: 1% box (structural trend) and 0.25% box (short-term shifts).
 # Falls back to yfinance-computed % above 200 DMA if no P&F reading exists.
-pnf_row = D["breadth"][0] if D["breadth"] else None
-if pnf_row:
-    breadth = {
-        "pct_above": float(pnf_row["breadth_pct"]),
-        "avg": float(pnf_row["avg_breadth_pct"]) if pnf_row.get("avg_breadth_pct") else None,
-        "source": pnf_row.get("source", "rzone_pnf"),
-        "date": pnf_row["reading_date"],
+def _parse_pnf_row(row):
+    """Parse a breadth_readings row into a breadth dict."""
+    if not row:
+        return None
+    return {
+        "pct_above": float(row["breadth_pct"]),
+        "avg": float(row["avg_breadth_pct"]) if row.get("avg_breadth_pct") else None,
+        "source": row.get("source", "rzone_pnf"),
+        "date": row["reading_date"],
         "above_count": None, "total": None,
     }
+
+pnf_1pct_row = D["breadth_1pct"][0] if D["breadth_1pct"] else None
+pnf_025pct_row = D["breadth_025pct"][0] if D["breadth_025pct"] else None
+
+breadth_1pct = _parse_pnf_row(pnf_1pct_row)
+breadth_025pct = _parse_pnf_row(pnf_025pct_row)
+
+# Primary breadth for ladder logic: 1% P&F (structural), fallback to yfinance
+if breadth_1pct:
+    breadth = breadth_1pct
 elif breadth_yf:
     breadth = {**breadth_yf, "source": "yfinance", "avg": None, "date": None}
 else:
@@ -570,7 +583,8 @@ with tab_cockpit:
 
         if nifty:
             pct = nifty["pct_from_ema"]
-            bpct = breadth["pct_above"] if breadth else None
+            bpct = breadth["pct_above"] if breadth else None  # 1% P&F for ladder decisions
+            bpct_025 = breadth_025pct["pct_above"] if breadth_025pct else None  # 0.25% for info
 
             # Determine system state using DUAL-CONDITION logic
             # Both EMA distance AND breadth filter must be met for deployment tiers
@@ -617,29 +631,36 @@ with tab_cockpit:
                 f'<div style="font-size:12px;color:#444">Deployment permission: <strong>{deploy_perm}</strong></div>'
                 f'</div>', unsafe_allow_html=True)
 
-            # Nifty metrics row — 4 cols now (added breadth)
-            nm1, nm2, nm3, nm4 = st.columns(4)
+            # Nifty metrics row — 5 cols (EMA + both breadth sources)
+            nm1, nm2, nm3, nm4, nm5 = st.columns(5)
             nm1.metric("Nifty 50", f"{nifty['price']:,.0f}", delta=f"{nifty['daily_chg']:+.2f}%")
             nm2.metric("200 EMA", f"{nifty['ema200']:,.0f}")
             ema_delta_color = "inverse" if pct < 0 else "normal"
             nm3.metric("vs 200 EMA", f"{pct:+.2f}%",
                        delta="below" if pct < 0 else "above", delta_color=ema_delta_color)
-            if breadth:
-                b_color = "inverse" if breadth["pct_above"] < 50 else "normal"
-                if breadth["source"] == "yfinance":
-                    b_delta = f'{breadth["above_count"]}/{breadth["total"]} above 200 DMA'
-                    b_label = "Breadth (yf)"
-                else:
-                    b_delta = f'P&F {breadth["source"]} · {breadth["date"]}'
-                    b_label = "P&F Breadth"
-                nm4.metric(b_label, f'{breadth["pct_above"]}%',
-                           delta=b_delta, delta_color=b_color)
+            # P&F 1% breadth (structural trend)
+            if breadth_1pct:
+                b1_color = "inverse" if breadth_1pct["pct_above"] < 50 else "normal"
+                nm4.metric("P&F 1%", f'{breadth_1pct["pct_above"]}%',
+                           delta=f'{breadth_1pct["date"]}', delta_color=b1_color)
+            elif breadth_yf:
+                b1_color = "inverse" if breadth_yf["pct_above"] < 50 else "normal"
+                nm4.metric("Breadth (yf)", f'{breadth_yf["pct_above"]}%',
+                           delta=f'{breadth_yf["above_count"]}/{breadth_yf["total"]} >200 DMA',
+                           delta_color=b1_color)
             else:
-                nm4.metric("Breadth", "—", delta="unavailable")
+                nm4.metric("P&F 1%", "—", delta="unavailable")
+            # P&F 0.25% breadth (short-term shifts)
+            if breadth_025pct:
+                b025_color = "inverse" if breadth_025pct["pct_above"] < 50 else "normal"
+                nm5.metric("P&F 0.25%", f'{breadth_025pct["pct_above"]}%',
+                           delta=f'{breadth_025pct["date"]}', delta_color=b025_color)
+            else:
+                nm5.metric("P&F 0.25%", "—", delta="unavailable")
 
             # Tier ladder visualization — now shows BOTH conditions
             st.markdown("")
-            st.markdown("**Deployment Ladder** <span style='font-size:11px;color:#888'>(dual-condition: EMA + breadth)</span>",
+            st.markdown("**Deployment Ladder** <span style='font-size:11px;color:#888'>(dual-condition: EMA + 1% P&F breadth · 0.25% shown for context)</span>",
                         unsafe_allow_html=True)
             for tier in LADDER_TIERS:
                 thr = tier["threshold"]
@@ -672,12 +693,21 @@ with tab_cockpit:
                 ema_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
                             f'background:{"#dcfce7" if ema_hit else "#fee2e2"};'
                             f'color:{"#166534" if ema_hit else "#991b1b"}">EMA {"✓" if ema_hit else "✗"}</span>')
+                # 1% breadth pill (used for deployment decisions)
                 breadth_pill_color = "#dcfce7" if breadth_hit else "#fee2e2" if bpct is not None else "#f3f4f6"
                 breadth_pill_text = "#166534" if breadth_hit else "#991b1b" if bpct is not None else "#888"
                 breadth_status = "✓" if breadth_hit else "✗" if bpct is not None else "?"
                 breadth_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
                                 f'background:{breadth_pill_color};color:{breadth_pill_text}">'
-                                f'B≤{bmax}% {breadth_status}</span>')
+                                f'1%≤{bmax} {breadth_status}</span>')
+                # 0.25% breadth pill (informational — short-term sensitivity)
+                b025_hit = bpct_025 is not None and bpct_025 <= bmax
+                b025_pill_color = "#dbeafe" if b025_hit else "#fef3c7" if bpct_025 is not None else "#f3f4f6"
+                b025_pill_text = "#1e40af" if b025_hit else "#92400e" if bpct_025 is not None else "#888"
+                b025_status = "✓" if b025_hit else "✗" if bpct_025 is not None else "?"
+                breadth_025_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
+                                    f'background:{b025_pill_color};color:{b025_pill_text}">'
+                                    f'.25%≤{bmax} {b025_status}</span>')
 
                 st.markdown(
                     f'<div style="display:flex;align-items:center;gap:6px;padding:6px 10px;margin:2px 0;'
@@ -685,7 +715,7 @@ with tab_cockpit:
                     f'<span style="font-size:14px">{marker}</span>'
                     f'<span style="min-width:26px;font-weight:700;font-size:13px">T{tier["tier"]}</span>'
                     f'<span style="font-size:12px;color:#444">{thr}%</span>'
-                    f'{ema_pill}{breadth_pill}'
+                    f'{ema_pill}{breadth_pill}{breadth_025_pill}'
                     f'<span style="flex:1;font-size:11px;color:#666;text-align:right">→ {tier["deploy_pct"]}% Midcap 150</span>'
                     f'<span style="font-size:11px;color:{MUTED};min-width:70px;text-align:right">₹{trigger_price:,.0f}</span>'
                     f'</div>', unsafe_allow_html=True)
@@ -1500,13 +1530,15 @@ with tab_system:
 
     # ── P&F Breadth Management ─────────────────────────────
     st.markdown("#### 📊 P&F X-Percent Breadth")
-    st.caption("Authoritative breadth signal for Tactical Ladder (from Rzone P&F charts, 1% box / 3-box reversal)")
+    st.caption("Dual breadth signals: **1% box** (structural trend) + **0.25% box** (short-term shifts) from Rzone P&F charts")
 
     bread_tab1, bread_tab2, bread_tab3 = st.tabs(["📝 Add Reading", "📋 History", "📤 Import CSV"])
 
     with bread_tab1:
         with st.form("add_breadth"):
-            bc1, bc2, bc3 = st.columns(3)
+            bc0, bc1, bc2, bc3 = st.columns([1.2, 1, 1, 1])
+            b_source = bc0.selectbox("Box Value", ["rzone_pnf_1pct", "rzone_pnf_025pct"],
+                                      format_func=lambda x: "1% box" if "1pct" in x and "025" not in x else "0.25% box")
             b_date = bc1.date_input("Reading Date", value=datetime.now())
             b_val = bc2.number_input("Breadth %", min_value=0.0, max_value=100.0,
                                       value=25.0, step=0.01, format="%.2f")
@@ -1519,54 +1551,74 @@ with tab_system:
             try:
                 _sb().table("breadth_readings").upsert({
                     "reading_date": str(b_date),
-                    "source": "rzone_pnf",
+                    "source": b_source,
                     "breadth_pct": b_val,
                     "avg_breadth_pct": b_avg,
                     "notes": b_notes or None,
                 }, on_conflict="reading_date,source").execute()
-                st.success(f"✅ Saved breadth {b_val}% for {b_date}")
+                src_label = "1%" if "1pct" in b_source and "025" not in b_source else "0.25%"
+                st.success(f"✅ Saved {src_label} breadth {b_val}% for {b_date}")
                 st.cache_data.clear()
             except Exception as e:
                 st.error(f"Failed to save: {e}")
 
     with bread_tab2:
         try:
-            hist_rows = _sb().table("breadth_readings").select("*") \
-                .order("reading_date", desc=True).limit(52).execute().data or []
+            hist_source = st.radio("Source filter", ["Both", "1% box", "0.25% box"],
+                                    horizontal=True, key="breadth_hist_filter")
+            query = _sb().table("breadth_readings").select("*")
+            if hist_source == "1% box":
+                query = query.eq("source", "rzone_pnf_1pct")
+            elif hist_source == "0.25% box":
+                query = query.eq("source", "rzone_pnf_025pct")
+            hist_rows = query.order("reading_date", desc=True).limit(100).execute().data or []
             if hist_rows:
                 bdf = pd.DataFrame(hist_rows)[["reading_date", "breadth_pct", "avg_breadth_pct", "source", "notes"]]
-                bdf.columns = ["Date", "Breadth %", "Avg %", "Source", "Notes"]
+                bdf["source"] = bdf["source"].map({"rzone_pnf_1pct": "1%", "rzone_pnf_025pct": "0.25%",
+                                                     "rzone_pnf": "legacy"}).fillna(bdf["source"])
+                bdf.columns = ["Date", "Breadth %", "Avg %", "Box", "Notes"]
                 st.dataframe(bdf, use_container_width=True, hide_index=True)
 
-                # Mini sparkline of breadth history
-                if len(hist_rows) > 2:
-                    bdf_chart = pd.DataFrame(hist_rows).sort_values("reading_date")
-                    fig_b = go.Figure()
+                # Breadth chart — overlay both sources when showing both
+                bdf_all = pd.DataFrame(hist_rows).sort_values("reading_date")
+                fig_b = go.Figure()
+                if hist_source == "Both":
+                    for src, color, label in [("rzone_pnf_1pct", "#355ec9", "1% box"),
+                                               ("rzone_pnf_025pct", "#10b981", "0.25% box")]:
+                        src_df = bdf_all[bdf_all["source"] == src]
+                        if not src_df.empty:
+                            fig_b.add_trace(go.Scatter(
+                                x=src_df["reading_date"],
+                                y=src_df["breadth_pct"].astype(float),
+                                mode="lines", name=label,
+                                line=dict(color=color, width=2),
+                            ))
+                else:
                     fig_b.add_trace(go.Scatter(
-                        x=bdf_chart["reading_date"],
-                        y=bdf_chart["breadth_pct"].astype(float),
+                        x=bdf_all["reading_date"],
+                        y=bdf_all["breadth_pct"].astype(float),
                         mode="lines+markers", name="P&F Breadth",
-                        line=dict(color="#355ec9", width=2), marker=dict(size=5),
+                        line=dict(color="#355ec9", width=2), marker=dict(size=4),
                     ))
-                    if bdf_chart["avg_breadth_pct"].notna().any():
+                    if bdf_all["avg_breadth_pct"].notna().any():
                         fig_b.add_trace(go.Scatter(
-                            x=bdf_chart["reading_date"],
-                            y=bdf_chart["avg_breadth_pct"].astype(float),
+                            x=bdf_all["reading_date"],
+                            y=bdf_all["avg_breadth_pct"].astype(float),
                             mode="lines", name="Average",
                             line=dict(color="#eb6834", width=1, dash="dash"),
                         ))
-                    # Tier reference lines
-                    for thr, lbl in [(40, "T1"), (35, "T2"), (30, "T3"), (25, "T4"), (20, "T5")]:
-                        fig_b.add_hline(y=thr, line_dash="dot", line_color="#ccc", line_width=1,
-                                        annotation_text=lbl, annotation_position="right",
-                                        annotation_font_size=9, annotation_font_color="#aaa")
-                    fig_b.update_layout(
-                        height=250, margin=dict(l=0, r=0, t=10, b=10),
-                        xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#eef0f3", title="%"),
-                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    )
-                    st.plotly_chart(fig_b, use_container_width=True)
+                # Tier reference lines
+                for thr, lbl in [(40, "T1"), (35, "T2"), (30, "T3"), (25, "T4"), (20, "T5")]:
+                    fig_b.add_hline(y=thr, line_dash="dot", line_color="#ccc", line_width=1,
+                                    annotation_text=lbl, annotation_position="right",
+                                    annotation_font_size=9, annotation_font_color="#aaa")
+                fig_b.update_layout(
+                    height=280, margin=dict(l=0, r=0, t=10, b=10),
+                    xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#eef0f3", title="%"),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+                st.plotly_chart(fig_b, use_container_width=True)
             else:
                 st.info("No breadth readings yet.")
         except Exception as e:
@@ -1575,6 +1627,9 @@ with tab_system:
     with bread_tab3:
         st.markdown("Upload a CSV exported from **Rzone → Breadth → EXPORT**.")
         st.caption("Expected columns: `Date`, `Breadth Value` (or `X Percent Breadth`), and optionally `Average Value`.")
+        csv_source = st.selectbox("Import as source", ["rzone_pnf_1pct", "rzone_pnf_025pct"],
+                                   format_func=lambda x: "1% box" if "1pct" in x and "025" not in x else "0.25% box",
+                                   key="csv_import_source")
         csv_file = st.file_uploader("Choose CSV file", type=["csv"], key="breadth_csv")
         if csv_file:
             try:
@@ -1587,9 +1642,11 @@ with tab_system:
                 avg_col = next((c for c in raw.columns if "average" in c.lower() or "avg" in c.lower()), None)
 
                 if date_col and val_col:
+                    src_label = "1%" if "1pct" in csv_source and "025" not in csv_source else "0.25%"
                     st.success(f"Detected: Date=`{date_col}`, Breadth=`{val_col}`" +
-                               (f", Avg=`{avg_col}`" if avg_col else ""))
-                    if st.button(f"📥 Import {len(raw)} rows", type="primary"):
+                               (f", Avg=`{avg_col}`" if avg_col else "") +
+                               f" → importing as **{src_label} box**")
+                    if st.button(f"📥 Import {len(raw)} rows as {src_label}", type="primary"):
                         imported = 0
                         for _, row in raw.iterrows():
                             try:
@@ -1597,14 +1654,14 @@ with tab_system:
                                 bv = float(row[val_col])
                                 av = float(row[avg_col]) if avg_col and pd.notna(row.get(avg_col)) else None
                                 _sb().table("breadth_readings").upsert({
-                                    "reading_date": rd, "source": "rzone_pnf",
+                                    "reading_date": rd, "source": csv_source,
                                     "breadth_pct": bv, "avg_breadth_pct": av,
-                                    "notes": "Rzone CSV import",
+                                    "notes": f"Rzone CSV import ({src_label})",
                                 }, on_conflict="reading_date,source").execute()
                                 imported += 1
                             except Exception:
                                 continue
-                        st.success(f"✅ Imported {imported}/{len(raw)} readings")
+                        st.success(f"✅ Imported {imported}/{len(raw)} {src_label} readings")
                         st.cache_data.clear()
                 else:
                     st.warning("Could not auto-detect columns. Ensure CSV has a `Date` column and a breadth value column.")
