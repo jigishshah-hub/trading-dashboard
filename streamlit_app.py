@@ -312,7 +312,8 @@ for p in active:
     ticker = p.get("ticker")
     entry = f(p.get("entry_price")) or 0
     stop = f(p.get("stop_loss")) or 0
-    qty = f(p.get("quantity")) or 0
+    initial_stop = f(p.get("initial_stop")) or stop
+    qty = f(p.get("qty_open")) or f(p.get("quantity")) or 0
     cmp, is_live = get_cmp(ticker, entry)
     price = cmp or entry
 
@@ -320,10 +321,12 @@ for p in active:
     current_value = price * qty
     pnl = current_value - cost_basis
     pnl_pct = (pnl / cost_basis * 100) if cost_basis else 0
+    # R-multiple uses initial risk (original stop), stop distance uses current stop
+    initial_risk = entry - initial_stop if initial_stop else 0
     risk_per_share = entry - stop if stop else 0
     capital_at_risk = risk_per_share * qty
-    stop_dist_pct = ((price - stop) / (entry - stop) * 100) if (entry - stop) != 0 else 100
-    r_multiple = ((price - entry) / risk_per_share) if risk_per_share > 0 else 0
+    stop_dist_pct = ((price - stop) / price * 100) if price else 0
+    r_multiple = ((price - entry) / initial_risk) if initial_risk > 0 else 0
     days_in = days_since(p.get("entry_date"))
     sector = sector_map.get(ticker, p.get("sector") or "Unknown")
     sleeve = p.get("sleeve") or "Unassigned"
