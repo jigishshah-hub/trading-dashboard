@@ -94,21 +94,27 @@ def sync_position_monitoring(sb, trades):
         ticker = clean(row.get("ticker"))
         if not trade_id or not ticker or ticker == EXAMPLE_TICKER:
             continue
-        sb.table("position_monitoring").upsert(
-            {
-                "trade_id": trade_id,
-                "ticker": ticker,
-                "direction": clean(row.get("direction")),
-                "setup": clean(row.get("setup")),
-                "entry_price": clean(row.get("entry_price")),
-                "quantity": clean(row.get("quantity")),
-                "stop_loss": clean(row.get("stop_loss")),
-                "review_date": clean(row.get("review_date")),
-                "status": clean(row.get("status")) or "active",
-                "sleeve": clean(row.get("sleeve")),
-                "position_size_pct": clean_percent(row.get("position_size_pct")),
-            }
-        ).execute()
+        data = {
+            "trade_id": trade_id,
+            "ticker": ticker,
+            "direction": clean(row.get("direction")),
+            "setup": clean(row.get("setup")),
+            "entry_price": clean(row.get("entry_price")),
+            "quantity": clean(row.get("quantity")),
+            "stop_loss": clean(row.get("stop_loss")),
+            "review_date": clean(row.get("review_date")),
+            "status": clean(row.get("status")) or "active",
+            "sleeve": clean(row.get("sleeve")),
+            "position_size_pct": clean_percent(row.get("position_size_pct")),
+        }
+        # Optional columns for partial exits and revised stops
+        initial_stop = clean(row.get("initial_stop"))
+        if initial_stop is not None:
+            data["initial_stop"] = initial_stop
+        qty_open = clean(row.get("qty_open"))
+        if qty_open is not None:
+            data["qty_open"] = qty_open
+        sb.table("position_monitoring").upsert(data).execute()
 
 
 def sync_conditions(sb, trades):
@@ -171,6 +177,7 @@ def sync_lots(sb, lots):
                 "qty": clean(row.get("qty")),
                 "price": clean(row.get("price")),
                 "notes": clean(row.get("notes")),
+                "lot_type": clean(row.get("lot_type")) or "entry",
             }
         ).execute()
 
