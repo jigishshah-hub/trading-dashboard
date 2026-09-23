@@ -63,8 +63,52 @@ def load():
 D = load()
 
 
+# ── Live price fetch (yfinance) during market hours ────────
+def _is_nse_market_hours():
+    """Check if NSE is likely open (Mon-Fri, 9:15 AM - 3:30 PM IST)."""
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(IST)
+    if now.weekday() >= 5:  # Sat/Sun
+        return False
+    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=35, second=0, microsecond=0)  # 5-min buffer
+    return market_open <= now <= market_close
+
+
+@st.cache_data(ttl=120)  # 2-min cache
+def fetch_live_prices(tickers_tuple):
+    """Fetch live prices from yfinance for active tickers.
+    Returns dict of ticker -> price. Only called during market hours."""
+    if not tickers_tuple:
+        return {}
+    symbols = " ".join(f"{t}.NS" for t in tickers_tuple)
+    try:
+        data = yf.download(symbols, period="1d", interval="1m", progress=False)
+        if data.empty:
+            return {}
+        # For multi-ticker downloads, columns are MultiIndex (Price, Ticker)
+        prices = {}
+        if isinstance(data.columns, pd.MultiIndex):
+            for t in tickers_tuple:
+                sym = f"{t}.NS"
+                try:
+                    col = data[("Close", sym)].dropna()
+                    if not col.empty:
+                        prices[t] = round(float(col.iloc[-1]), 2)
+                except (KeyError, IndexError):
+                    pass
+        else:
+            # Single ticker case
+            col = data["Close"].dropna()
+            if not col.empty and len(tickers_tuple) == 1:
+                prices[tickers_tuple[0]] = round(float(col.iloc[-1]), 2)
+        return prices
+    except Exception:
+        return {}
+
+
 # ── Nifty 50 Market Regime ──────────────────────────────────
-@st.cache_data(ttl=900)  # 15-min cache
+@st.cache_data(ttl=120)  # 2-min cache during market hours
 def fetch_nifty_regime():
     """Fetch Nifty 50 price + 200 EMA for Tactical Ladder framework."""
     try:
@@ -116,7 +160,7 @@ NIFTY50_TICKERS = [
 ]
 
 
-@st.cache_data(ttl=900)  # 15-min cache
+@st.cache_data(ttl=120)  # 2-min cache during market hours
 def fetch_nifty50_breadth():
     """Compute % of Nifty 50 stocks trading above their 200 DMA."""
     try:
@@ -216,6 +260,12 @@ for s in D["stocks"]:
                 is_fresh = False
         if is_fresh:
             price_map[s["ticker"]] = float(cp)
+
+# Override with live yfinance prices during market hours
+if _is_nse_market_hours():
+    active_tickers = tuple(sorted(set(p.get("ticker") for p in active if p.get("ticker"))))
+    live_prices = fetch_live_prices(active_tickers)
+    price_map.update(live_prices)
 
 
 # ── Helpers ─────────────────────────────────────────────────
@@ -512,22 +562,27 @@ with tab_cockpit:
 
     # Live price badge
     if has_live:
-        freshest = max((s.get("price_updated_at") or "" for s in D["stocks"] if s.get("current_price")), default="")
-        if freshest:
-            try:
-                upd = datetime.fromisoformat(str(freshest).replace("Z", "+00:00"))
-                mins_ago = int((datetime.now(timezone.utc) - upd).total_seconds() / 60)
-                if mins_ago < 60:
-                    age_txt = f"{mins_ago}m ago"
-                elif mins_ago < 1440:
-                    age_txt = f"{mins_ago // 60}h ago"
-                else:
-                    age_txt = f"{mins_ago // 1440}d ago"
-                st.markdown(
-                    f'<div style="text-align:right;margin-bottom:-12px;font-size:11px;color:#667085">'
-                    f'🟢 Live prices · updated {age_txt}</div>', unsafe_allow_html=True)
-            except Exception:
-                pass
+        if _is_nse_market_hours():
+            st.markdown(
+                '<div style="text-align:right;margin-bottom:-12px;font-size:11px;color:#667085">'
+                '🟢 Live prices · yfinance · refreshes every 2 min</div>', unsafe_allow_html=True)
+        else:
+            freshest = max((s.get("price_updated_at") or "" for s in D["stocks"] if s.get("current_price")), default="")
+            if freshest:
+                try:
+                    upd = datetime.fromisoformat(str(freshest).replace("Z", "+00:00"))
+                    mins_ago = int((datetime.now(timezone.utc) - upd).total_seconds() / 60)
+                    if mins_ago < 60:
+                        age_txt = f"{mins_ago}m ago"
+                    elif mins_ago < 1440:
+                        age_txt = f"{mins_ago // 60}h ago"
+                    else:
+                        age_txt = f"{mins_ago // 1440}d ago"
+                    st.markdown(
+                        f'<div style="text-align:right;margin-bottom:-12px;font-size:11px;color:#667085">'
+                        f'🔵 Screener.in prices · updated {age_txt}</div>', unsafe_allow_html=True)
+                except Exception:
+                    pass
 
     # KPIs
     k1, k2, k3, k4, k5, k6 = st.columns(6)
