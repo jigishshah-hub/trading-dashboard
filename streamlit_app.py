@@ -297,6 +297,8 @@ def compute_stats_model(df, entry, stop, target):
         "chop_prob", "mfe_further", "mfe_pullback", "std_daily",
         "big_move_pct", "current_streak", "streak_dir", "pct_from_entry",
         "target_already_hit", "stop_already_hit",
+        "exp_days", "med_terminal", "expected_value", "edge_ratio",
+        "conviction", "vol_regime", "ewma_sigma", "sigma_14",
     ]}
     closes = df["Close"].dropna().values
     if len(closes) < 20:
@@ -346,34 +348,73 @@ def compute_stats_model(df, entry, stop, target):
     # ── 3. BB Width percentile ────────────────────────────────
     bb_pctile = df["BB_Width_Pctile"].iloc[-1] if "BB_Width_Pctile" in df.columns else None
 
-    # ── 4. Monte Carlo — target/stop probability ──────────────
+    # ── 4. Monte Carlo — EWMA vol + momentum-adjusted drift ───
     # ALL positions are LONG (Indian equity, no short selling).
     # Stop can be above entry (trailed stop) — doesn't change direction.
+    #
+    # Enhancement over flat historical sampling:
+    # - σ from EWMA (span=30) — recent vol weighs more than old vol
+    # - μ adjusted by lag-1 autocorrelation — trending stocks get drift tilt
+    # - Tracks: days to resolution, median terminal price, edge ratio
     n_sims = 10000
     n_days = 40  # ~2 months of trading
-    target_hits = 0
-    stop_hits = 0
-    neither = 0
 
     # Check if target/stop already reached from CMP
     target_already_hit = (target > 0 and cmp >= target)
     stop_already_hit = (stop > 0 and cmp <= stop)
 
+    # EWMA volatility (span=30, giving λ≈0.935 — recent days weigh ~3× more)
+    ewma_span = 30
+    ewma_alpha = 2.0 / (ewma_span + 1)
+    weights = np.array([(1 - ewma_alpha) ** i for i in range(len(daily_returns) - 1, -1, -1)])
+    weights /= weights.sum()
+    ewma_mu = np.dot(weights, daily_returns)
+    ewma_var = np.dot(weights, (daily_returns - ewma_mu) ** 2)
+    ewma_sigma = np.sqrt(ewma_var)
+
+    # Also compute short-term σ (14-day) and long-term σ (full) for vol regime
+    sigma_14 = np.std(daily_returns[-14:]) if len(daily_returns) >= 14 else ewma_sigma
+    sigma_full = np.std(daily_returns)
+    vol_ratio = sigma_14 / sigma_full if sigma_full > 0 else 1.0
+    if vol_ratio > 1.3:
+        vol_regime = "Expanding"
+    elif vol_ratio < 0.7:
+        vol_regime = "Contracting"
+    else:
+        vol_regime = "Normal"
+
+    # Momentum-adjusted drift: tilt μ by autocorrelation signal
+    # If trending (ρ₁ > 0), recent direction has persistence → use recent 14-day μ
+    # If mean-reverting (ρ₁ < 0), recent moves tend to reverse → dampen recent μ
+    mu_14 = np.mean(daily_returns[-14:]) if len(daily_returns) >= 14 else ewma_mu
+    momentum_weight = min(max(autocorr_1, -0.3), 0.3)  # cap at ±0.3
+    # Blend: more autocorrelation → lean more on recent drift direction
+    sim_mu = ewma_mu + momentum_weight * (mu_14 - ewma_mu)
+    sim_sigma = ewma_sigma
+
+    target_hits = 0
+    stop_hits = 0
+    neither = 0
+    days_to_target = []
+    days_to_stop = []
+    terminal_prices = []
+
     if len(daily_returns) > 20 and target and target > 0 and stop > 0 and not target_already_hit and not stop_already_hit:
+        np.random.seed(42)  # reproducible across refreshes
         for _ in range(n_sims):
             path = cmp
             hit_target = False
             hit_stop = False
             for d_idx in range(n_days):
-                ret = np.random.choice(daily_returns)
+                ret = np.random.normal(sim_mu, sim_sigma)
                 path *= (1 + ret)
-                # Always LONG: stop is hit when price drops to/below stop,
-                # target is hit when price rises to/above target
                 if path <= stop:
                     hit_stop = True
+                    days_to_stop.append(d_idx + 1)
                     break
                 if path >= target:
                     hit_target = True
+                    days_to_target.append(d_idx + 1)
                     break
             if hit_target:
                 target_hits += 1
@@ -381,19 +422,55 @@ def compute_stats_model(df, entry, stop, target):
                 stop_hits += 1
             else:
                 neither += 1
+                terminal_prices.append(path)
         target_prob = target_hits / n_sims * 100
         stop_prob = stop_hits / n_sims * 100
         chop_prob = neither / n_sims * 100
+        # Expected days to resolution (median of resolved paths)
+        all_days = days_to_target + days_to_stop
+        exp_days = int(np.median(all_days)) if all_days else n_days
+        # Median terminal price for chop paths
+        med_terminal = float(np.median(terminal_prices)) if terminal_prices else cmp
+        # Edge ratio: target_prob weighted by reward vs stop_prob weighted by risk
+        reward_pct = (target - cmp) / cmp * 100 if cmp > 0 else 0
+        risk_pct = (cmp - stop) / cmp * 100 if cmp > 0 else 0
+        expected_value = (target_prob / 100 * reward_pct) - (stop_prob / 100 * risk_pct)
+        edge_ratio = (target_prob * reward_pct) / (stop_prob * risk_pct) if (stop_prob * risk_pct) > 0 else 99.0
     elif target_already_hit:
         target_prob = 100.0
         stop_prob = 0.0
         chop_prob = 0.0
+        exp_days = 0
+        med_terminal = cmp
+        expected_value = 0
+        edge_ratio = 99.0
     elif stop_already_hit:
         target_prob = 0.0
         stop_prob = 100.0
         chop_prob = 0.0
+        exp_days = 0
+        med_terminal = cmp
+        expected_value = 0
+        edge_ratio = 0.0
     else:
         target_prob = stop_prob = chop_prob = None
+        exp_days = None
+        med_terminal = None
+        expected_value = None
+        edge_ratio = None
+
+    # Conviction score (0-100): synthesizes edge ratio, momentum, vol regime
+    conviction = None
+    if target_prob is not None:
+        # Base: edge ratio contribution (capped at 50 pts)
+        er_score = min(max((edge_ratio - 0.5) * 30, 0), 50) if edge_ratio < 99 else 50
+        # Momentum boost: trending +15, neutral 0, mean-reverting -10
+        mom_score = 15 if momentum_char == "Trending" else (-10 if momentum_char == "Mean-reverting" else 0)
+        # Vol regime: contracting +10 (coiling), normal 0, expanding -5 (whipsaw risk)
+        vol_score = 10 if vol_regime == "Contracting" else (-5 if vol_regime == "Expanding" else 0)
+        # Chop penalty: high chop = uncertain
+        chop_penalty = -min(chop_prob * 0.3, 15) if chop_prob else 0
+        conviction = int(min(max(er_score + mom_score + vol_score + chop_penalty, 0), 100))
 
     # ── 5. MFE — after moves of similar magnitude, how much further?
     pct_from_entry = ((cmp - entry) / entry * 100) if entry else 0
@@ -450,6 +527,14 @@ def compute_stats_model(df, entry, stop, target):
         "chop_prob": chop_prob,
         "target_already_hit": target_already_hit,
         "stop_already_hit": stop_already_hit,
+        "exp_days": exp_days,
+        "med_terminal": med_terminal,
+        "expected_value": expected_value,
+        "edge_ratio": edge_ratio,
+        "conviction": conviction,
+        "vol_regime": vol_regime,
+        "ewma_sigma": ewma_sigma * 100 if ewma_sigma else None,  # as %
+        "sigma_14": sigma_14 * 100 if sigma_14 else None,  # as %
         "mfe_further": mfe_further,
         "mfe_pullback": mfe_pullback,
         "std_daily": std_daily,
@@ -1884,103 +1969,126 @@ with tab_positions:
                 _atr_display = f"₹{stats['atr']:.1f}" if stats.get('atr') else "—"
                 st.caption(f"📊 Entry: ₹{_entry:,.0f} | Stop: ₹{_stop:,.0f} | Target: ₹{_target:,.0f} | CMP: ₹{_cmp_val:,.0f} | ATR: {_atr_display}")
 
+                # ── Row 1: Conviction + Monte Carlo probabilities ────
                 sc1, sc2, sc3, sc4 = st.columns(4)
 
-                # Monte Carlo probabilities — handle "already hit" states
-                _mc_note = "10K sims" if (pos.get("target") and pos["target"] > 0) else "10K sims · est. 2:1 target"
+                _mc_note = "EWMA vol · 10K sims" if (pos.get("target") and pos["target"] > 0) else "EWMA vol · est. 2:1 tgt"
                 _tgt_hit = stats.get("target_already_hit", False)
                 _stp_hit = stats.get("stop_already_hit", False)
+                _conviction = stats.get("conviction")
 
-                if _tgt_hit:
+                # Conviction score (col 1) — always show when available
+                if _conviction is not None:
+                    if _conviction >= 65:
+                        conv_color = "#22c55e"
+                        conv_label = "Strong"
+                    elif _conviction >= 40:
+                        conv_color = "#3b82f6"
+                        conv_label = "Moderate"
+                    elif _conviction >= 20:
+                        conv_color = "#f59e0b"
+                        conv_label = "Weak"
+                    else:
+                        conv_color = "#ef4444"
+                        conv_label = "Poor"
+                    _er = stats.get("edge_ratio") or 0
+                    _er_txt = f'{_er:.1f}×' if _er < 99 else "∞"
                     sc1.markdown(
-                        f'<div style="padding:8px;background:rgba(34,197,94,.12);'
+                        f'<div style="padding:8px;background:rgba(59,130,246,.06);'
                         f'border-radius:6px;text-align:center">'
-                        f'<div style="font-size:10px;color:#666">Target Hit Prob</div>'
-                        f'<div style="font-size:18px;font-weight:700;color:#22c55e">'
-                        f'✅ Already above</div>'
-                        f'<div style="font-size:9px;color:#999">CMP ₹{_cmp_val:,.0f} > Target ₹{_target:,.0f}</div>'
-                        f'</div>', unsafe_allow_html=True
-                    )
-                    sc2.markdown(
-                        f'<div style="padding:8px;background:rgba(34,197,94,.06);'
-                        f'border-radius:6px;text-align:center">'
-                        f'<div style="font-size:10px;color:#666">Status</div>'
-                        f'<div style="font-size:14px;font-weight:600;color:#22c55e">'
-                        f'Trail stop & let it run</div>'
-                        f'<div style="font-size:9px;color:#999">Stop at ₹{_stop:,.0f} ({(_cmp_val - _stop) / _cmp_val * 100:.1f}% buffer)</div>'
-                        f'</div>', unsafe_allow_html=True
-                    )
-                elif _stp_hit:
-                    sc1.markdown(
-                        f'<div style="padding:8px;background:rgba(239,68,68,.12);'
-                        f'border-radius:6px;text-align:center">'
-                        f'<div style="font-size:10px;color:#666">Stop Status</div>'
-                        f'<div style="font-size:18px;font-weight:700;color:#ef4444">'
-                        f'🔴 BREACHED</div>'
-                        f'<div style="font-size:9px;color:#999">CMP ₹{_cmp_val:,.0f} ≤ Stop ₹{_stop:,.0f}</div>'
-                        f'</div>', unsafe_allow_html=True
-                    )
-                    sc2.markdown(
-                        f'<div style="padding:8px;background:rgba(239,68,68,.06);'
-                        f'border-radius:6px;text-align:center">'
-                        f'<div style="font-size:10px;color:#666">Action</div>'
-                        f'<div style="font-size:14px;font-weight:600;color:#ef4444">'
-                        f'Exit per rules</div>'
-                        f'</div>', unsafe_allow_html=True
-                    )
-                elif stats["target_prob"] is not None:
-                    sc1.markdown(
-                        f'<div style="padding:8px;background:rgba(34,197,94,.06);'
-                        f'border-radius:6px;text-align:center">'
-                        f'<div style="font-size:10px;color:#666">Target Hit Prob</div>'
-                        f'<div style="font-size:20px;font-weight:700;color:#22c55e">'
-                        f'{stats["target_prob"]:.0f}%</div>'
-                        f'<div style="font-size:9px;color:#999">{_mc_note}</div>'
-                        f'</div>', unsafe_allow_html=True
-                    )
-                    sc2.markdown(
-                        f'<div style="padding:8px;background:rgba(239,68,68,.06);'
-                        f'border-radius:6px;text-align:center">'
-                        f'<div style="font-size:10px;color:#666">Stop Hit Prob</div>'
-                        f'<div style="font-size:20px;font-weight:700;color:#ef4444">'
-                        f'{stats["stop_prob"]:.0f}%</div>'
-                        f'<div style="font-size:9px;color:#999">{stats["chop_prob"]:.0f}% chop / undecided</div>'
+                        f'<div style="font-size:10px;color:#666">Conviction</div>'
+                        f'<div style="font-size:22px;font-weight:700;color:{conv_color}">'
+                        f'{_conviction}</div>'
+                        f'<div style="font-size:10px;font-weight:600;color:{conv_color}">{conv_label}</div>'
+                        f'<div style="font-size:9px;color:#999">Edge ratio: {_er_txt}</div>'
                         f'</div>', unsafe_allow_html=True
                     )
                 else:
-                    sc1.caption("Monte Carlo: insufficient data")
-                    sc2.caption("—")
+                    sc1.caption("Conviction: insufficient data")
 
-                # Momentum character
+                # Target / Stop / Chop (col 2) — combined probabilities bar
+                if _tgt_hit:
+                    sc2.markdown(
+                        f'<div style="padding:8px;background:rgba(34,197,94,.12);'
+                        f'border-radius:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Target Status</div>'
+                        f'<div style="font-size:16px;font-weight:700;color:#22c55e">'
+                        f'✅ Already above</div>'
+                        f'<div style="font-size:9px;color:#999">Trail stop · buffer {(_cmp_val - _stop) / _cmp_val * 100:.1f}%</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                elif _stp_hit:
+                    sc2.markdown(
+                        f'<div style="padding:8px;background:rgba(239,68,68,.12);'
+                        f'border-radius:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Stop Status</div>'
+                        f'<div style="font-size:16px;font-weight:700;color:#ef4444">'
+                        f'🔴 BREACHED</div>'
+                        f'<div style="font-size:9px;color:#999">Exit per rules</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                elif stats["target_prob"] is not None:
+                    _tp = stats["target_prob"]
+                    _sp = stats["stop_prob"]
+                    _cp = stats["chop_prob"] or 0
+                    # Stacked probability bar
+                    sc2.markdown(
+                        f'<div style="padding:8px;background:rgba(0,0,0,.02);'
+                        f'border-radius:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Monte Carlo Outcome</div>'
+                        f'<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;margin:6px 0">'
+                        f'<div style="width:{_tp}%;background:#22c55e"></div>'
+                        f'<div style="width:{_cp}%;background:#94a3b8"></div>'
+                        f'<div style="width:{_sp}%;background:#ef4444"></div>'
+                        f'</div>'
+                        f'<div style="display:flex;justify-content:space-between;font-size:11px">'
+                        f'<span style="color:#22c55e;font-weight:600">🎯 {_tp:.0f}%</span>'
+                        f'<span style="color:#94a3b8">{_cp:.0f}% chop</span>'
+                        f'<span style="color:#ef4444;font-weight:600">🛑 {_sp:.0f}%</span>'
+                        f'</div>'
+                        f'<div style="font-size:9px;color:#999;margin-top:2px">{_mc_note}</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                else:
+                    sc2.caption("Monte Carlo: insufficient data")
+
+                # Momentum + Vol regime (col 3)
                 ac = stats["autocorr"] or 0.0
                 ac5 = stats.get("autocorr_5") or 0.0
                 momentum_char = stats["momentum_char"] or "—"
                 mc_color = "#3b82f6" if momentum_char == "Trending" else (
                     "#f59e0b" if momentum_char == "Mean-reverting" else "#94a3b8")
+                _vr = stats.get("vol_regime") or "—"
+                _vr_color = "#ef4444" if _vr == "Expanding" else ("#22c55e" if _vr == "Contracting" else "#94a3b8")
                 sc3.markdown(
                     f'<div style="padding:8px;background:rgba(59,130,246,.06);'
                     f'border-radius:6px;text-align:center">'
-                    f'<div style="font-size:10px;color:#666">Momentum</div>'
-                    f'<div style="font-size:16px;font-weight:700;color:{mc_color}">'
+                    f'<div style="font-size:10px;color:#666">Momentum · Vol</div>'
+                    f'<div style="font-size:15px;font-weight:700;color:{mc_color}">'
                     f'{momentum_char}</div>'
-                    f'<div style="font-size:9px;color:#999">ρ₁={ac:.3f} ρ₅={ac5:.3f} · {stats["momentum_advice"] or ""}</div>'
+                    f'<div style="font-size:10px;color:{_vr_color};font-weight:600">Vol {_vr}</div>'
+                    f'<div style="font-size:9px;color:#999">ρ₁={ac:.3f} ρ₅={ac5:.3f}</div>'
                     f'</div>', unsafe_allow_html=True
                 )
 
-                # Volatility context
+                # Resolution + Volatility (col 4)
                 atr_txt = f'ATR ₹{stats["atr"]:.1f} ({stats["atr_pct"]:.1f}%)' if stats["atr"] else "—"
-                stop_atr_txt = f'{stats["stop_atr"]:.1f}×ATR' if stats["stop_atr"] else "—"
-                bb_txt = f'BB Width {stats["bb_pctile"]:.0f}th pctile' if stats["bb_pctile"] and pd.notna(stats["bb_pctile"]) else "—"
+                stop_atr_txt = f'Stop: {stats["stop_atr"]:.1f}×ATR' if stats["stop_atr"] else ""
+                _exp_days = stats.get("exp_days")
+                _exp_days_txt = f'~{_exp_days}d to resolve' if _exp_days and _exp_days < 40 else "May not resolve in 40d"
+                _ev = stats.get("expected_value")
+                _ev_txt = f'EV: {"+" if _ev >= 0 else ""}{_ev:.1f}%' if _ev is not None else ""
                 sc4.markdown(
                     f'<div style="padding:8px;background:rgba(168,85,247,.06);'
                     f'border-radius:6px;text-align:center">'
-                    f'<div style="font-size:10px;color:#666">Volatility</div>'
-                    f'<div style="font-size:13px;font-weight:600">{atr_txt}</div>'
-                    f'<div style="font-size:9px;color:#999">Stop: {stop_atr_txt} · {bb_txt}</div>'
+                    f'<div style="font-size:10px;color:#666">Resolution</div>'
+                    f'<div style="font-size:14px;font-weight:600">{_exp_days_txt}</div>'
+                    f'<div style="font-size:10px;font-weight:600;color:{"#22c55e" if (_ev or 0) > 0 else "#ef4444"}">{_ev_txt}</div>'
+                    f'<div style="font-size:9px;color:#999">{atr_txt} · {stop_atr_txt}</div>'
                     f'</div>', unsafe_allow_html=True
                 )
 
-                # MFE row
+                # ── Row 2: MFE / MAE / Streak / Daily σ ────
                 if stats["mfe_further"] is not None:
                     mf1, mf2, mf3, mf4 = st.columns(4)
                     mf1.markdown(
@@ -2006,36 +2114,45 @@ with tab_positions:
                         f'</div>', unsafe_allow_html=True
                     )
                     big_move = stats.get("big_move_pct") or 0
-                    std_d = stats.get("std_daily") or 0
+                    _ewma_s = stats.get("ewma_sigma") or 0
+                    _s14 = stats.get("sigma_14") or 0
                     mf4.markdown(
                         f'<div style="padding:6px;text-align:center">'
-                        f'<div style="font-size:10px;color:#666">Daily σ / Big Move %</div>'
+                        f'<div style="font-size:10px;color:#666">σ EWMA / 14d</div>'
                         f'<div style="font-size:16px;font-weight:600">'
-                        f'{std_d:.2f}% / {big_move:.0f}%</div>'
+                        f'{_ewma_s:.2f}% / {_s14:.2f}%</div>'
+                        f'<div style="font-size:9px;color:#999">{big_move:.0f}% days >3% move</div>'
                         f'</div>', unsafe_allow_html=True
                     )
 
-                # Action signal
+                # ── Action signals ────
                 signals = []
                 if _tgt_hit:
                     signals.append("🟢 Target already reached — consider booking partial / trailing stop")
                 elif _stp_hit:
                     signals.append("🔴 Stop breached — exit per position rules")
                 elif stats["target_prob"] is not None:
-                    if stats["target_prob"] > 60:
-                        signals.append("🟢 High target probability — hold / add on dips")
+                    if _conviction and _conviction >= 65:
+                        signals.append("🟢 High conviction — hold / add on dips")
+                    elif _conviction and _conviction >= 40:
+                        signals.append("🔵 Moderate conviction — hold, no add")
                     elif stats["stop_prob"] > 55:
-                        signals.append("🔴 High stop probability — consider reducing or tightening stop")
-                    elif stats["chop_prob"] > 50:
-                        signals.append("🟡 High chop probability — reduce size or wait for breakout")
+                        signals.append("🔴 Stop probability dominant — consider reducing or tightening")
+                    elif stats["chop_prob"] and stats["chop_prob"] > 50:
+                        signals.append("🟡 High chop — capital likely stuck; reduce size or wait for breakout")
+                    if stats.get("expected_value") is not None and stats["expected_value"] < -1:
+                        signals.append("⚠️ Negative expected value — risk/reward unfavorable at current levels")
                 if momentum_char == "Trending" and (stats.get("pct_from_entry") or 0) > 5:
-                    signals.append("📈 Trending stock with momentum — trail stop, don't exit early")
+                    signals.append("📈 Trending with momentum — trail stop, don't exit early")
                 if momentum_char == "Mean-reverting" and (stats.get("pct_from_entry") or 0) > 10:
                     signals.append("🔄 Mean-reverting stock up big — consider partial profit")
                 if stats["stop_atr"] and stats["stop_atr"] < 1:
                     signals.append("⚠️ Stop < 1×ATR — very tight; one normal day can trigger it")
-                if stats["bb_pctile"] and pd.notna(stats["bb_pctile"]) and stats["bb_pctile"] > 85:
-                    signals.append("💥 Volatility expansion (BB width >85th pctile) — breakout or breakdown likely")
+                _vr_val = stats.get("vol_regime")
+                if _vr_val == "Expanding":
+                    signals.append("💥 Volatility expanding — wider swings; be prepared for whipsaws")
+                elif _vr_val == "Contracting":
+                    signals.append("🔋 Volatility contracting — coiling; breakout move likely imminent")
 
                 if signals:
                     signal_html = "".join(
