@@ -56,6 +56,7 @@ def load():
         "fundsnap": sb.table("fundamentals_snapshots").select("*").order("pulled_at", desc=True).execute().data or [],
         "breadth_1pct": sb.table("breadth_readings").select("*").eq("source", "rzone_pnf_1pct").order("reading_date", desc=True).limit(1).execute().data or [],
         "breadth_025pct": sb.table("breadth_readings").select("*").eq("source", "rzone_pnf_025pct").order("reading_date", desc=True).limit(1).execute().data or [],
+        "snapshots": sb.table("daily_snapshots").select("*").order("snapshot_date").execute().data or [],
     }
 
 
@@ -509,6 +510,25 @@ with tab_cockpit:
             f'<div style="padding:4px 12px;font-weight:600;color:#d97706;font-size:13px">⚡ {len(warning_alerts)} Watch Item(s)</div>'
             f'{html}</div>', unsafe_allow_html=True)
 
+    # Live price badge
+    if has_live:
+        freshest = max((s.get("price_updated_at") or "" for s in D["stocks"] if s.get("current_price")), default="")
+        if freshest:
+            try:
+                upd = datetime.fromisoformat(str(freshest).replace("Z", "+00:00"))
+                mins_ago = int((datetime.now(timezone.utc) - upd).total_seconds() / 60)
+                if mins_ago < 60:
+                    age_txt = f"{mins_ago}m ago"
+                elif mins_ago < 1440:
+                    age_txt = f"{mins_ago // 60}h ago"
+                else:
+                    age_txt = f"{mins_ago // 1440}d ago"
+                st.markdown(
+                    f'<div style="text-align:right;margin-bottom:-12px;font-size:11px;color:#667085">'
+                    f'🟢 Live prices · updated {age_txt}</div>', unsafe_allow_html=True)
+            except Exception:
+                pass
+
     # KPIs
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Portfolio Value", fmt(total_value),
@@ -779,14 +799,25 @@ with tab_cockpit:
 
     # Portfolio Equity Curve — full width below
     st.markdown("#### 📈 Portfolio Equity Curve")
-    st.caption("Cumulative capital deployed over time from lot entries")
 
+    snapshots = D.get("snapshots", [])
     all_lots = sorted(D["lots"], key=lambda l: l.get("lot_date") or "9999")
-    if all_lots:
-        curve_dates = []
-        curve_invested = []
-        lot_events = {}
 
+    if snapshots:
+        # Build daily portfolio value from daily_snapshots
+        # Group by date -> sum of position_value for each date
+        from collections import defaultdict
+        daily_value = defaultdict(float)
+        daily_invested = {}
+
+        for snap in snapshots:
+            sd = snap.get("snapshot_date")
+            pv = f(snap.get("position_value"))
+            if sd and pv is not None:
+                daily_value[sd] += pv
+
+        # Build invested curve from lot events
+        lot_events = {}
         for lot in all_lots:
             ld = lot.get("lot_date")
             if not ld:
@@ -794,11 +825,82 @@ with tab_cockpit:
             lqty = f(lot.get("qty")) or 0
             lprice = f(lot.get("price")) or 0
             lot_cost = lqty * lprice
-            # Exit lots reduce capital deployed, entry lots add
             if (lot.get("lot_type") or "entry") == "exit":
                 lot_cost = -lot_cost
             lot_events[ld] = lot_events.get(ld, 0) + lot_cost
 
+        # Build running invested total for each snapshot date
+        all_dates = sorted(daily_value.keys())
+        running_inv = 0
+        inv_by_date = {}
+        lot_dates_sorted = sorted(lot_events.keys())
+        lot_idx = 0
+        for d in all_dates:
+            while lot_idx < len(lot_dates_sorted) and lot_dates_sorted[lot_idx] <= d:
+                running_inv += lot_events[lot_dates_sorted[lot_idx]]
+                lot_idx = lot_idx + 1
+            inv_by_date[d] = running_inv
+
+        curve_dates = all_dates
+        curve_values = [daily_value[d] for d in curve_dates]
+        curve_invested = [inv_by_date.get(d, 0) for d in curve_dates]
+
+        # Add today's live point
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        if today_str not in daily_value:
+            curve_dates = list(curve_dates) + [today_str]
+            curve_values.append(total_value)
+            curve_invested.append(total_invested)
+
+        st.caption(f"Daily portfolio market value vs capital deployed ({len(all_dates)} trading days)")
+
+        fig_equity = go.Figure()
+        fig_equity.add_trace(go.Scatter(
+            x=curve_dates, y=curve_values,
+            mode='lines', name='Market Value',
+            line=dict(color='#2563eb', width=2.5),
+            fill='tozeroy', fillcolor='rgba(37,99,235,0.08)',
+            hovertemplate='%{x}<br>Value: ₹%{y:,.0f}<extra></extra>',
+        ))
+        fig_equity.add_trace(go.Scatter(
+            x=curve_dates, y=curve_invested,
+            mode='lines', name='Invested',
+            line=dict(color=MUTED, width=1.5, dash='dot'),
+            hovertemplate='%{x}<br>Invested: ₹%{y:,.0f}<extra></extra>',
+        ))
+        # Today's marker
+        fig_equity.add_trace(go.Scatter(
+            x=[curve_dates[-1]], y=[curve_values[-1]],
+            mode='markers', name=f'Today ({fmt(curve_values[-1])})',
+            marker=dict(size=10, color=GREEN if curve_values[-1] >= curve_invested[-1] else RED, symbol='diamond'),
+            hovertemplate='Today<br>Value: ₹%{y:,.0f}<extra></extra>',
+        ))
+        fig_equity.update_layout(
+            height=260, margin=dict(l=0, r=0, t=10, b=10),
+            xaxis=dict(showgrid=False, title=None),
+            yaxis=dict(showgrid=True, gridcolor="#eef0f3", title="₹"),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_equity, use_container_width=True)
+
+    elif all_lots:
+        # Fallback: lot-event based curve (no daily snapshots yet)
+        st.caption("Cumulative capital deployed (daily snapshots pending — run backfill for full equity curve)")
+        lot_events = {}
+        for lot in all_lots:
+            ld = lot.get("lot_date")
+            if not ld:
+                continue
+            lqty = f(lot.get("qty")) or 0
+            lprice = f(lot.get("price")) or 0
+            lot_cost = lqty * lprice
+            if (lot.get("lot_type") or "entry") == "exit":
+                lot_cost = -lot_cost
+            lot_events[ld] = lot_events.get(ld, 0) + lot_cost
+
+        curve_dates = []
+        curve_invested = []
         running = 0
         for date_str in sorted(lot_events.keys()):
             running += lot_events[date_str]
