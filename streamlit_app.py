@@ -286,63 +286,80 @@ def compute_technicals(df):
 
 
 def compute_stats_model(df, entry, stop, target):
-    """Statistical edge model: Monte Carlo, MFE/MAE, momentum, volatility."""
+    """Statistical edge model: Monte Carlo, MFE/MAE, momentum, volatility.
+
+    All positions are assumed LONG (Indian equity — no retail short selling).
+    Stop can be above entry when it has been trailed up.
+    """
+    _none_result = {k: None for k in [
+        "momentum_char", "momentum_advice", "autocorr", "atr", "atr_pct",
+        "stop_atr", "target_atr", "bb_pctile", "target_prob", "stop_prob",
+        "chop_prob", "mfe_further", "mfe_pullback", "std_daily",
+        "big_move_pct", "current_streak", "streak_dir", "pct_from_entry",
+        "target_already_hit", "stop_already_hit",
+    ]}
     closes = df["Close"].dropna().values
     if len(closes) < 20:
-        return {k: None for k in [
-            "momentum_char", "momentum_advice", "autocorr", "atr", "atr_pct",
-            "stop_atr", "target_atr", "bb_pctile", "target_prob", "stop_prob",
-            "chop_prob", "mfe_further", "mfe_pullback", "std_daily",
-            "big_move_pct", "current_streak", "streak_dir", "pct_from_entry",
-        ]}
+        return _none_result
     cmp = closes[-1]
     daily_returns = np.diff(closes) / closes[:-1]
-    # Remove NaN/inf — yfinance data can have gaps
     daily_returns = daily_returns[np.isfinite(daily_returns)]
     if len(daily_returns) < 20:
-        return {k: None for k in [
-            "momentum_char", "momentum_advice", "autocorr", "atr", "atr_pct",
-            "stop_atr", "target_atr", "bb_pctile", "target_prob", "stop_prob",
-            "chop_prob", "mfe_further", "mfe_pullback", "std_daily",
-            "big_move_pct", "current_streak", "streak_dir", "pct_from_entry",
-        ]}
+        return _none_result
 
-    # 1. Momentum character — autocorrelation of returns
-    if len(daily_returns) > 20:
-        try:
-            autocorr_1 = np.corrcoef(daily_returns[:-1], daily_returns[1:])[0, 1]
-            if np.isnan(autocorr_1):
-                autocorr_1 = 0.0
-        except Exception:
+    # ── 1. Momentum character ─────────────────────────────────
+    # Lag-1 autocorrelation of daily returns
+    # Also compute lag-5 (weekly) for a richer picture
+    try:
+        autocorr_1 = np.corrcoef(daily_returns[:-1], daily_returns[1:])[0, 1]
+        if np.isnan(autocorr_1):
             autocorr_1 = 0.0
-    else:
+    except Exception:
         autocorr_1 = 0.0
-    if autocorr_1 > 0.05:
+
+    autocorr_5 = 0.0
+    if len(daily_returns) > 25:
+        try:
+            autocorr_5 = np.corrcoef(daily_returns[:-5], daily_returns[5:])[0, 1]
+            if np.isnan(autocorr_5):
+                autocorr_5 = 0.0
+        except Exception:
+            autocorr_5 = 0.0
+
+    # Use combined signal: if either lag shows persistence, flag it
+    # Thresholds: ρ₁ > 0.03 or ρ₅ > 0.05 → trending
+    if autocorr_1 > 0.03 or autocorr_5 > 0.05:
         momentum_char = "Trending"
         momentum_advice = "Let winners run; trail don't cut"
-    elif autocorr_1 < -0.05:
+    elif autocorr_1 < -0.03 or autocorr_5 < -0.05:
         momentum_char = "Mean-reverting"
         momentum_advice = "Take profits faster; moves tend to reverse"
     else:
         momentum_char = "Neutral"
         momentum_advice = "No strong persistence pattern"
 
-    # 2. ATR context
+    # ── 2. ATR context ────────────────────────────────────────
     atr = df["ATR"].iloc[-1] if "ATR" in df.columns and pd.notna(df["ATR"].iloc[-1]) else None
     stop_atr = abs(cmp - stop) / atr if atr and atr > 0 and stop > 0 else None
     target_atr = abs(target - cmp) / atr if atr and atr > 0 and target else None
 
-    # 3. BB Width percentile
+    # ── 3. BB Width percentile ────────────────────────────────
     bb_pctile = df["BB_Width_Pctile"].iloc[-1] if "BB_Width_Pctile" in df.columns else None
 
-    # 4. Monte Carlo — target/stop probability
+    # ── 4. Monte Carlo — target/stop probability ──────────────
+    # ALL positions are LONG (Indian equity, no short selling).
+    # Stop can be above entry (trailed stop) — doesn't change direction.
     n_sims = 10000
     n_days = 40  # ~2 months of trading
     target_hits = 0
     stop_hits = 0
     neither = 0
 
-    if len(daily_returns) > 20 and target and stop > 0:
+    # Check if target/stop already reached from CMP
+    target_already_hit = (target > 0 and cmp >= target)
+    stop_already_hit = (stop > 0 and cmp <= stop)
+
+    if len(daily_returns) > 20 and target and target > 0 and stop > 0 and not target_already_hit and not stop_already_hit:
         for _ in range(n_sims):
             path = cmp
             hit_target = False
@@ -350,16 +367,14 @@ def compute_stats_model(df, entry, stop, target):
             for d_idx in range(n_days):
                 ret = np.random.choice(daily_returns)
                 path *= (1 + ret)
-                if entry < stop:  # short trade
-                    if path >= stop:
-                        hit_stop = True; break
-                    if path <= target:
-                        hit_target = True; break
-                else:  # long trade
-                    if path <= stop:
-                        hit_stop = True; break
-                    if path >= target:
-                        hit_target = True; break
+                # Always LONG: stop is hit when price drops to/below stop,
+                # target is hit when price rises to/above target
+                if path <= stop:
+                    hit_stop = True
+                    break
+                if path >= target:
+                    hit_target = True
+                    break
             if hit_target:
                 target_hits += 1
             elif hit_stop:
@@ -369,10 +384,18 @@ def compute_stats_model(df, entry, stop, target):
         target_prob = target_hits / n_sims * 100
         stop_prob = stop_hits / n_sims * 100
         chop_prob = neither / n_sims * 100
+    elif target_already_hit:
+        target_prob = 100.0
+        stop_prob = 0.0
+        chop_prob = 0.0
+    elif stop_already_hit:
+        target_prob = 0.0
+        stop_prob = 100.0
+        chop_prob = 0.0
     else:
         target_prob = stop_prob = chop_prob = None
 
-    # 5. MFE — after moves of similar magnitude, how much further?
+    # ── 5. MFE — after moves of similar magnitude, how much further?
     pct_from_entry = ((cmp - entry) / entry * 100) if entry else 0
     mfe_further = None
     mfe_pullback = None
@@ -385,28 +408,24 @@ def compute_stats_model(df, entry, stop, target):
                 if i - window < 0:
                     continue
                 hist_move = (closes[i] - closes[i - window]) / closes[i - window] * 100
-                if abs(hist_move - pct_from_entry) < move_pct * 0.3:  # similar magnitude
-                    # measure max additional move and max pullback in next 10 days
+                if abs(hist_move - pct_from_entry) < move_pct * 0.3:
                     future = closes[i:i+10]
                     if len(future) > 1:
-                        if pct_from_entry > 0:  # long
-                            max_fwd = (max(future) - closes[i]) / closes[i] * 100
-                            max_pull = (closes[i] - min(future)) / closes[i] * 100
-                        else:
-                            max_fwd = (closes[i] - min(future)) / closes[i] * 100
-                            max_pull = (max(future) - closes[i]) / closes[i] * 100
+                        # Always long — further = up, pullback = down
+                        max_fwd = (max(future) - closes[i]) / closes[i] * 100
+                        max_pull = (closes[i] - min(future)) / closes[i] * 100
                         further_moves.append(max_fwd)
                         pullbacks.append(max_pull)
         if further_moves:
             mfe_further = np.median(further_moves)
             mfe_pullback = np.median(pullbacks)
 
-    # 6. Return distribution stats
+    # ── 6. Return distribution stats ──────────────────────────
     std_daily = np.std(daily_returns) * 100 if len(daily_returns) > 10 else None
     big_move_pct = (np.sum(np.abs(daily_returns) > 0.03) / len(daily_returns) * 100
                     if len(daily_returns) > 10 else None)
 
-    # 7. Streak analysis
+    # ── 7. Streak analysis ────────────────────────────────────
     recent = daily_returns[-10:] if len(daily_returns) >= 10 else daily_returns
     current_streak = 0
     streak_dir = "green" if recent[-1] > 0 else "red"
@@ -420,6 +439,7 @@ def compute_stats_model(df, entry, stop, target):
         "momentum_char": momentum_char,
         "momentum_advice": momentum_advice,
         "autocorr": autocorr_1,
+        "autocorr_5": autocorr_5,
         "atr": atr,
         "atr_pct": (atr / cmp * 100) if atr else None,
         "stop_atr": stop_atr,
@@ -428,6 +448,8 @@ def compute_stats_model(df, entry, stop, target):
         "target_prob": target_prob,
         "stop_prob": stop_prob,
         "chop_prob": chop_prob,
+        "target_already_hit": target_already_hit,
+        "stop_already_hit": stop_already_hit,
         "mfe_further": mfe_further,
         "mfe_pullback": mfe_pullback,
         "std_daily": std_daily,
@@ -1848,21 +1870,65 @@ with tab_positions:
                 _entry = pos.get("entry") or 0
                 _stop = pos.get("stop") or 0
                 _target = pos.get("target") or 0
-                # If target is 0 but we have entry, estimate 2:1 R:R target
+                # If target is 0 but we have entry+stop, estimate 2:1 R:R target
+                # For trailed stops (stop > entry), use initial risk estimate
                 if _target == 0 and _entry > 0 and _stop > 0:
-                    _target = _entry + 2 * abs(_entry - _stop)
+                    _risk = abs(_entry - _stop) if _stop < _entry else _entry * 0.05  # 5% default risk if stop trailed above
+                    _target = _entry + 2 * _risk
                 stats = compute_stats_model(tech_df, entry=_entry, stop=_stop, target=_target)
 
                 st.markdown("**🎯 Statistical Edge Scorecard**")
 
                 # Debug: show actual values being used (can remove later)
-                st.caption(f"📊 Debug — Entry: ₹{_entry:,.0f} | Stop: ₹{_stop:,.0f} | Target: ₹{_target:,.0f} | CMP: ₹{tech_df['Close'].iloc[-1]:,.0f} | ATR: {stats.get('atr') or '—'}")
+                _cmp_val = tech_df['Close'].iloc[-1]
+                _atr_display = f"₹{stats['atr']:.1f}" if stats.get('atr') else "—"
+                st.caption(f"📊 Entry: ₹{_entry:,.0f} | Stop: ₹{_stop:,.0f} | Target: ₹{_target:,.0f} | CMP: ₹{_cmp_val:,.0f} | ATR: {_atr_display}")
 
                 sc1, sc2, sc3, sc4 = st.columns(4)
 
-                # Monte Carlo probabilities
+                # Monte Carlo probabilities — handle "already hit" states
                 _mc_note = "10K sims" if (pos.get("target") and pos["target"] > 0) else "10K sims · est. 2:1 target"
-                if stats["target_prob"] is not None:
+                _tgt_hit = stats.get("target_already_hit", False)
+                _stp_hit = stats.get("stop_already_hit", False)
+
+                if _tgt_hit:
+                    sc1.markdown(
+                        f'<div style="padding:8px;background:rgba(34,197,94,.12);'
+                        f'border-radius:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Target Hit Prob</div>'
+                        f'<div style="font-size:18px;font-weight:700;color:#22c55e">'
+                        f'✅ Already above</div>'
+                        f'<div style="font-size:9px;color:#999">CMP ₹{_cmp_val:,.0f} > Target ₹{_target:,.0f}</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                    sc2.markdown(
+                        f'<div style="padding:8px;background:rgba(34,197,94,.06);'
+                        f'border-radius:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Status</div>'
+                        f'<div style="font-size:14px;font-weight:600;color:#22c55e">'
+                        f'Trail stop & let it run</div>'
+                        f'<div style="font-size:9px;color:#999">Stop at ₹{_stop:,.0f} ({(_cmp_val - _stop) / _cmp_val * 100:.1f}% buffer)</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                elif _stp_hit:
+                    sc1.markdown(
+                        f'<div style="padding:8px;background:rgba(239,68,68,.12);'
+                        f'border-radius:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Stop Status</div>'
+                        f'<div style="font-size:18px;font-weight:700;color:#ef4444">'
+                        f'🔴 BREACHED</div>'
+                        f'<div style="font-size:9px;color:#999">CMP ₹{_cmp_val:,.0f} ≤ Stop ₹{_stop:,.0f}</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                    sc2.markdown(
+                        f'<div style="padding:8px;background:rgba(239,68,68,.06);'
+                        f'border-radius:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Action</div>'
+                        f'<div style="font-size:14px;font-weight:600;color:#ef4444">'
+                        f'Exit per rules</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                elif stats["target_prob"] is not None:
                     sc1.markdown(
                         f'<div style="padding:8px;background:rgba(34,197,94,.06);'
                         f'border-radius:6px;text-align:center">'
@@ -1887,6 +1953,7 @@ with tab_positions:
 
                 # Momentum character
                 ac = stats["autocorr"] or 0.0
+                ac5 = stats.get("autocorr_5") or 0.0
                 momentum_char = stats["momentum_char"] or "—"
                 mc_color = "#3b82f6" if momentum_char == "Trending" else (
                     "#f59e0b" if momentum_char == "Mean-reverting" else "#94a3b8")
@@ -1896,7 +1963,7 @@ with tab_positions:
                     f'<div style="font-size:10px;color:#666">Momentum</div>'
                     f'<div style="font-size:16px;font-weight:700;color:{mc_color}">'
                     f'{momentum_char}</div>'
-                    f'<div style="font-size:9px;color:#999">ρ = {ac:.3f} · {stats["momentum_advice"] or ""}</div>'
+                    f'<div style="font-size:9px;color:#999">ρ₁={ac:.3f} ρ₅={ac5:.3f} · {stats["momentum_advice"] or ""}</div>'
                     f'</div>', unsafe_allow_html=True
                 )
 
@@ -1950,7 +2017,11 @@ with tab_positions:
 
                 # Action signal
                 signals = []
-                if stats["target_prob"] is not None:
+                if _tgt_hit:
+                    signals.append("🟢 Target already reached — consider booking partial / trailing stop")
+                elif _stp_hit:
+                    signals.append("🔴 Stop breached — exit per position rules")
+                elif stats["target_prob"] is not None:
                     if stats["target_prob"] > 60:
                         signals.append("🟢 High target probability — hold / add on dips")
                     elif stats["stop_prob"] > 55:
