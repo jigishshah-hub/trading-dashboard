@@ -117,9 +117,13 @@ def fetch_nifty_regime():
         if hist.empty:
             return None
         hist["EMA200"] = hist["Close"].ewm(span=200, adjust=False).mean()
+        ema200 = float(hist["EMA200"].iloc[-1])
 
-        # During market hours, daily bars may not include today's partial bar.
-        # Fetch 1-min intraday data to get the true live price.
+        # 200 EMA history for chart (always from daily bars)
+        chart_df = hist[["Close", "EMA200"]].tail(120).reset_index()
+        chart_df.columns = ["Date", "Close", "EMA200"]
+        chart_df["Date"] = chart_df["Date"].dt.strftime("%Y-%m-%d")
+
         IST = timezone(timedelta(hours=5, minutes=30))
         now_ist = datetime.now(IST)
         is_trading = (now_ist.weekday() < 5
@@ -127,50 +131,54 @@ def fetch_nifty_regime():
                       <= now_ist.replace(hour=15, minute=35, second=0))
 
         if is_trading:
+            # During market hours, yfinance daily bars can LAG by a day
+            # (yesterday's bar may not appear yet). So use multi-day intraday
+            # data to reliably get yesterday's close + today's live price.
+            nifty_close = None
+            prev_close = None
             try:
-                intra = nifty.history(period="1d", interval="1m")
+                intra = nifty.history(period="5d", interval="5m")
                 if not intra.empty:
-                    live_price = float(intra["Close"].dropna().iloc[-1])
-                else:
-                    live_price = None
+                    today_str = now_ist.strftime("%Y-%m-%d")
+                    bar_dates = [d.strftime("%Y-%m-%d") for d in intra.index]
+                    # Today's latest bar = live price
+                    today_closes = [float(intra.iloc[i]["Close"])
+                                    for i, d in enumerate(bar_dates) if d == today_str]
+                    if today_closes:
+                        nifty_close = today_closes[-1]
+                    # Previous trading day's last bar = prev close
+                    prev_day_dates = sorted(set(d for d in bar_dates if d < today_str))
+                    if prev_day_dates:
+                        prev_date = prev_day_dates[-1]
+                        prev_closes = [float(intra.iloc[i]["Close"])
+                                       for i, d in enumerate(bar_dates) if d == prev_date]
+                        if prev_closes:
+                            prev_close = prev_closes[-1]
             except Exception:
-                live_price = None
-        else:
-            live_price = None
+                pass
 
-        # Use live intraday price if available, else latest daily close
-        # Find previous trading day's close by excluding today from daily bars
-        today_str = now_ist.strftime("%Y-%m-%d")
-        prev_bars = hist[[d.strftime("%Y-%m-%d") < today_str for d in hist.index]]
+            # Fallback: daily bars (less reliable during market hours)
+            if nifty_close is None:
+                nifty_close = float(hist.iloc[-1]["Close"])
+            if prev_close is None:
+                prev_close = float(hist.iloc[-2]["Close"]) if len(hist) > 1 else nifty_close
 
-        if live_price:
-            nifty_close = live_price
-            if not prev_bars.empty:
-                prev_close = float(prev_bars.iloc[-1]["Close"])
-            else:
-                prev_close = float(hist.iloc[-1]["Close"])
             daily_chg = ((nifty_close - prev_close) / prev_close) * 100
-            ema200 = float(hist["EMA200"].iloc[-1])
         else:
+            # Outside market hours: daily bars are complete and reliable
             latest = hist.iloc[-1]
             prev = hist.iloc[-2] if len(hist) > 1 else latest
             nifty_close = float(latest["Close"])
-            ema200 = float(latest["EMA200"])
             daily_chg = ((nifty_close - float(prev["Close"])) / float(prev["Close"])) * 100
 
         pct_from_ema = ((nifty_close - ema200) / ema200) * 100
-
-        # 200 EMA history for chart
-        chart_df = hist[["Close", "EMA200"]].tail(120).reset_index()
-        chart_df.columns = ["Date", "Close", "EMA200"]
-        chart_df["Date"] = chart_df["Date"].dt.strftime("%Y-%m-%d")
 
         return {
             "price": nifty_close,
             "ema200": ema200,
             "pct_from_ema": pct_from_ema,
             "daily_chg": daily_chg,
-            "date": now_ist.strftime("%d %b %Y") if is_trading else hist.index[-1].strftime("%d %b %Y"),
+            "date": now_ist.strftime("%d %b %Y"),
             "chart": chart_df,
         }
     except Exception:
