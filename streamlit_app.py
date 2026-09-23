@@ -139,14 +139,16 @@ def fetch_nifty_regime():
             live_price = None
 
         # Use live intraday price if available, else latest daily close
+        # Find previous trading day's close by excluding today from daily bars
+        today_str = now_ist.strftime("%Y-%m-%d")
+        prev_bars = hist[[d.strftime("%Y-%m-%d") < today_str for d in hist.index]]
+
         if live_price:
             nifty_close = live_price
-            # Previous close = last completed daily bar
-            prev_close = float(hist.iloc[-1]["Close"])
-            # If today's partial bar exists in daily data, use the bar before it
-            today_str = now_ist.strftime("%Y-%m-%d")
-            if hasattr(hist.index[-1], 'strftime') and hist.index[-1].strftime("%Y-%m-%d") == today_str:
-                prev_close = float(hist.iloc[-2]["Close"]) if len(hist) > 1 else prev_close
+            if not prev_bars.empty:
+                prev_close = float(prev_bars.iloc[-1]["Close"])
+            else:
+                prev_close = float(hist.iloc[-1]["Close"])
             daily_chg = ((nifty_close - prev_close) / prev_close) * 100
             ema200 = float(hist["EMA200"].iloc[-1])
         else:
