@@ -1454,8 +1454,12 @@ with tab_perf:
         has_snapshots = len(snapshots) > 0
 
         if has_snapshots:
-            # Build daily total portfolio value from snapshots
+            # Portfolio value = ALL positions' market value + cumulative realized P&L
+            # When a position exits, its snapshots stop but the realized gain/loss
+            # carries forward as "cash" in the portfolio total.
             from collections import defaultdict
+
+            # Sum ALL snapshots (active + exited) by date
             daily_totals = defaultdict(float)
             for snap in snapshots:
                 sd = snap.get("snapshot_date")
@@ -1463,19 +1467,41 @@ with tab_perf:
                 if sd and pv is not None:
                     daily_totals[sd] += pv
 
-            sorted_dates = sorted(daily_totals.keys())
-            daily_vals = [daily_totals[d] for d in sorted_dates]
+            # Build realized P&L timeline from closed trades
+            # After exit date, add cumulative realized P&L to each day's total
+            realized_events = []  # (exit_date, realized_pnl)
+            for cl in D.get("closed", []):
+                exit_date = cl.get("exit_date")
+                exit_price = f(cl.get("exit_price"))
+                entry_price = f(cl.get("entry_price"))
+                # Get quantity from position_monitoring
+                pm = next((p for p in D["pos"] if p["trade_id"] == cl["trade_id"]), None)
+                qty = f(pm.get("quantity")) if pm else None
+                if exit_date and exit_price and entry_price and qty:
+                    rpnl = (exit_price - entry_price) * qty
+                    realized_events.append((exit_date, rpnl))
+            realized_events.sort()
 
-            # Add today's live value
+            # For each snapshot date, add cumulative realized P&L from exits before that date
+            sorted_dates = sorted(daily_totals.keys())
+            daily_vals = []
+            for d in sorted_dates:
+                base = daily_totals[d]
+                cum_realized = sum(pnl for ed, pnl in realized_events if ed <= d)
+                daily_vals.append(base + cum_realized)
+
+            # Add today's live value + total realized P&L
             today_str = datetime.now().strftime("%Y-%m-%d")
+            total_realized = sum(pnl for _, pnl in realized_events)
+            active_value = sum(p["current_value"] for p in positions)
+            today_total = active_value + total_realized
             if today_str not in daily_totals:
                 sorted_dates = list(sorted_dates) + [today_str]
-                daily_vals.append(total_value)
+                daily_vals.append(today_total)
 
             # Real peak and drawdown from daily data
-            running_peak = 0
-            peak_val = max(daily_vals) if daily_vals else total_value
-            current_val = daily_vals[-1] if daily_vals else total_value
+            peak_val = max(daily_vals) if daily_vals else today_total
+            current_val = daily_vals[-1] if daily_vals else today_total
             dd_from_peak = ((current_val - peak_val) / peak_val * 100) if peak_val > 0 else 0
 
             # Max drawdown (worst peak-to-trough)
@@ -1488,7 +1514,7 @@ with tab_perf:
                 if dd < max_dd:
                     max_dd = dd
 
-            st.caption(f"Tracked from daily snapshots ({len(sorted_dates)} trading days)")
+            st.caption(f"Active + realized P&L · {len(sorted_dates)} trading days · realized: {fmt(total_realized)}")
         else:
             # Fallback: estimate from positions
             peak_val = sum(max(p["current_value"], p["cost_basis"]) for p in positions)
