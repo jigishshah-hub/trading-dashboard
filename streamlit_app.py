@@ -192,7 +192,7 @@ nifty = fetch_nifty_regime()
 import numpy as np
 
 @st.cache_data(ttl=1800)  # 30-min cache
-def fetch_stock_history(ticker, period="1y"):
+def fetch_stock_history(ticker, period="2y"):
     """Fetch daily OHLCV from yfinance for an Indian stock."""
     try:
         t = yf.Ticker(f"{ticker}.NS")
@@ -205,6 +205,42 @@ def fetch_stock_history(ticker, period="1y"):
         return df
     except Exception:
         return None
+
+
+_RS_BENCHMARKS = {
+    "Nifty 50": "^NSEI",
+    "Nifty Bank": "^NSEBANK",
+    "Nifty IT": "^CNXIT",
+    "Nifty Midcap 50": "^NSEMDCP50",
+}
+
+
+@st.cache_data(ttl=1800)
+def fetch_benchmark_history(symbol, period="2y"):
+    """Fetch benchmark index close prices."""
+    try:
+        t = yf.Ticker(symbol)
+        hist = t.history(period=period)
+        if hist.empty:
+            return None
+        df = hist[["Close"]].reset_index()
+        df.columns = ["Date", "Close"]
+        df["Date"] = df["Date"].dt.tz_localize(None)
+        return df
+    except Exception:
+        return None
+
+
+def compute_relative_strength(stock_df, bench_df):
+    """Compute RS ratio = stock / benchmark, normalised to start at 100."""
+    merged = pd.merge(stock_df[["Date", "Close"]], bench_df, on="Date",
+                       suffixes=("_stock", "_bench"), how="inner")
+    if merged.empty:
+        return None
+    merged["RS_Raw"] = merged["Close_stock"] / merged["Close_bench"]
+    merged["RS"] = merged["RS_Raw"] / merged["RS_Raw"].iloc[0] * 100
+    merged["RS_MA"] = merged["RS"].rolling(20).mean()
+    return merged[["Date", "RS", "RS_MA"]]
 
 
 def compute_technicals(df):
@@ -1552,28 +1588,43 @@ with tab_positions:
             st.divider()
             st.markdown("**📈 Technical Analysis & Statistical Edge**")
 
-            hist_df = fetch_stock_history(sel_ticker, period="1y")
+            hist_df = fetch_stock_history(sel_ticker)
             if hist_df is not None and len(hist_df) > 30:
                 tech_df = compute_technicals(hist_df)
 
-                # Indicator toggles
-                tg1, tg2, tg3, tg4, tg5 = st.columns(5)
+                # Indicator toggles — row 1
+                tg1, tg2, tg3, tg4, tg5, tg6 = st.columns(6)
                 show_ema = tg1.checkbox("EMAs", value=True, key=f"ema_{sel_ticker}")
                 show_bb = tg2.checkbox("Bollinger", value=True, key=f"bb_{sel_ticker}")
                 show_rsi = tg3.checkbox("RSI", value=True, key=f"rsi_{sel_ticker}")
                 show_macd = tg4.checkbox("MACD", value=False, key=f"macd_{sel_ticker}")
                 show_vol = tg5.checkbox("Volume", value=True, key=f"vol_{sel_ticker}")
+                show_rs = tg6.checkbox("Rel. Strength", value=True, key=f"rs_{sel_ticker}")
+
+                # Benchmark selector (visible when RS toggled on)
+                rs_df = None
+                if show_rs:
+                    rs_bench = st.selectbox(
+                        "RS vs", list(_RS_BENCHMARKS.keys()),
+                        index=0, key=f"rs_bench_{sel_ticker}",
+                    )
+                    bench_sym = _RS_BENCHMARKS[rs_bench]
+                    bench_data = fetch_benchmark_history(bench_sym)
+                    if bench_data is not None:
+                        rs_df = compute_relative_strength(tech_df, bench_data)
 
                 # Determine subplot count and heights
                 n_rows = 1
                 row_specs = [{"secondary_y": False}]
-                row_heights = [0.55]
+                row_heights = [0.45]
+                if show_rs:
+                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.12)
                 if show_rsi:
-                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.15)
+                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.12)
                 if show_macd:
-                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.15)
+                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.12)
                 if show_vol:
-                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.15)
+                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.12)
 
                 from plotly.subplots import make_subplots
                 fig_tech = make_subplots(
@@ -1634,8 +1685,29 @@ with tab_positions:
                                        line_width=1, annotation_text="Target",
                                        annotation_position="right", row=1, col=1)
 
-                # RSI subplot
+                # Relative Strength subplot
                 cur_row = 2
+                if show_rs and rs_df is not None and not rs_df.empty:
+                    fig_tech.add_trace(go.Scatter(
+                        x=rs_df["Date"], y=rs_df["RS"],
+                        mode="lines", name=f"RS vs {rs_bench}",
+                        line=dict(color="#0ea5e9", width=1.5),
+                    ), row=cur_row, col=1)
+                    fig_tech.add_trace(go.Scatter(
+                        x=rs_df["Date"], y=rs_df["RS_MA"],
+                        mode="lines", name="RS MA(20)",
+                        line=dict(color="#0ea5e9", width=0.8, dash="dash"),
+                        showlegend=False,
+                    ), row=cur_row, col=1)
+                    # baseline at 100 = no outperformance
+                    fig_tech.add_hline(y=100, line_dash="dot", line_color="#94a3b8",
+                                       line_width=0.5, row=cur_row, col=1)
+                    fig_tech.update_yaxes(title_text="RS", row=cur_row, col=1)
+                    cur_row += 1
+                elif show_rs:
+                    cur_row += 1  # skip the allocated row
+
+                # RSI subplot
                 if show_rsi:
                     valid_rsi = tech_df.dropna(subset=["RSI"])
                     fig_tech.add_trace(go.Scatter(
@@ -1689,30 +1761,36 @@ with tab_positions:
                     ), row=cur_row, col=1)
                     fig_tech.update_yaxes(title_text="Vol", row=cur_row, col=1)
 
-                chart_height = 250 + n_rows * 100
+                chart_height = 350 + n_rows * 110
                 fig_tech.update_layout(
                     height=chart_height,
-                    margin=dict(l=0, r=0, t=10, b=10),
-                    legend=dict(orientation="h", yanchor="top", y=1.02, xanchor="left", x=0,
+                    margin=dict(l=0, r=0, t=30, b=10),
+                    legend=dict(orientation="h", yanchor="top", y=1.04, xanchor="left", x=0,
                                 font=dict(size=10)),
                     xaxis=dict(
-                        rangeslider=dict(visible=False),
+                        rangeslider=dict(visible=True, thickness=0.04),
                         rangeselector=dict(
                             buttons=[
                                 dict(count=1, label="1M", step="month", stepmode="backward"),
                                 dict(count=3, label="3M", step="month", stepmode="backward"),
                                 dict(count=6, label="6M", step="month", stepmode="backward"),
-                                dict(step="all", label="1Y"),
+                                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                                dict(step="all", label="All"),
                             ],
                             bgcolor="#f3f4f6", activecolor="#355ec9",
                         ),
                     ),
                     plot_bgcolor="rgba(0,0,0,0)",
                     paper_bgcolor="rgba(0,0,0,0)",
+                    dragmode="zoom",
                 )
                 fig_tech.update_xaxes(showgrid=False)
                 fig_tech.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.05)")
-                st.plotly_chart(fig_tech, use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(fig_tech, use_container_width=True, config={
+                    "displayModeBar": True,
+                    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+                    "displaylogo": False,
+                })
 
                 # ── Statistical Edge Scorecard ────────────────
                 stats = compute_stats_model(
