@@ -23,6 +23,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import yfinance as yf
 from supabase import create_client
 
@@ -88,6 +89,11 @@ def fetch_ohlcv(ticker: str, start_date: str, end_date: str = None):
     if data.empty:
         print(f"  ✗ {ticker} ({symbol}): no data returned")
         return []
+
+    # yfinance >= 0.2.31 returns multi-level columns like ('Close', 'AAPL.NS')
+    # for single-ticker downloads. Flatten to plain column names.
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
 
     rows = []
     for idx, row in data.iterrows():
