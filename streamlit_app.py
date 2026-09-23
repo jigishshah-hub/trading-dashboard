@@ -1503,12 +1503,26 @@ with tab_perf:
                 min_cum = min(min_cum, cum)
             initial_capital = -min_cum if min_cum < 0 else 0
 
+            # Build exit date lookup to filter out post-exit snapshots.
+            # The backfill script fetches data through today for ALL positions
+            # (including exited), so snapshots exist after exit — exclude them.
+            exit_date_map = {}
+            for cl in D.get("closed", []):
+                tid = cl.get("trade_id")
+                exd = cl.get("exit_date")
+                if tid and exd:
+                    exit_date_map[tid] = exd
+
             # Sum open positions' market value by date from snapshots
+            # Skip snapshots on or after exit date (position already sold)
             daily_stock = defaultdict(float)
             for snap in snapshots:
                 sd = snap.get("snapshot_date")
                 pv = f(snap.get("position_value"))
+                tid = snap.get("trade_id")
                 if sd and pv is not None:
+                    if tid and tid in exit_date_map and sd >= exit_date_map[tid]:
+                        continue  # position was already sold
                     daily_stock[sd] += pv
 
             # Portfolio(D) = stock(D) + cash(D)
