@@ -1643,7 +1643,7 @@ with tab_positions:
                     sub_configs.append((sub_name, 0.13))
 
                 n_rows = 1 + len(sub_configs)
-                row_specs = [{"secondary_y": False}]
+                row_specs = [{"secondary_y": False}] * n_rows
                 main_h = max(0.35, 0.65 - len(sub_configs) * 0.08)
                 row_heights = [main_h] + [s[1] for s in sub_configs]
 
@@ -1706,90 +1706,91 @@ with tab_positions:
                                        line_width=1, annotation_text="Target",
                                        annotation_position="right", row=1, col=1)
 
-                # Relative Strength subplot
+                # Render sub-chart indicators in user-chosen order
                 cur_row = 2
-                if show_rs and rs_df is not None and not rs_df.empty:
-                    fig_tech.add_trace(go.Scatter(
-                        x=rs_df["Date"], y=rs_df["RS"],
-                        mode="lines", name=f"RS vs {rs_bench}",
-                        line=dict(color="#0ea5e9", width=1.5),
-                    ), row=cur_row, col=1)
-                    fig_tech.add_trace(go.Scatter(
-                        x=rs_df["Date"], y=rs_df["RS_MA"],
-                        mode="lines", name="RS MA(20)",
-                        line=dict(color="#0ea5e9", width=0.8, dash="dash"),
-                        showlegend=False,
-                    ), row=cur_row, col=1)
-                    # baseline at 100 = no outperformance
-                    fig_tech.add_hline(y=100, line_dash="dot", line_color="#94a3b8",
-                                       line_width=0.5, row=cur_row, col=1)
-                    fig_tech.update_yaxes(title_text="RS", row=cur_row, col=1)
+                for sub_name, _ in sub_configs:
+                    if sub_name == "Rel. Strength":
+                        if rs_df is not None and not rs_df.empty:
+                            fig_tech.add_trace(go.Scatter(
+                                x=rs_df["Date"], y=rs_df["RS"],
+                                mode="lines", name=f"RS vs {rs_bench}",
+                                line=dict(color="#0ea5e9", width=1.5),
+                            ), row=cur_row, col=1)
+                            fig_tech.add_trace(go.Scatter(
+                                x=rs_df["Date"], y=rs_df["RS_MA"],
+                                mode="lines", name="RS MA(20)",
+                                line=dict(color="#0ea5e9", width=0.8, dash="dash"),
+                                showlegend=False,
+                            ), row=cur_row, col=1)
+                            fig_tech.add_hline(y=100, line_dash="dot", line_color="#94a3b8",
+                                               line_width=0.5, row=cur_row, col=1)
+                        fig_tech.update_yaxes(title_text="RS", row=cur_row, col=1)
+
+                    elif sub_name == "RSI":
+                        valid_rsi = tech_df.dropna(subset=["RSI"])
+                        fig_tech.add_trace(go.Scatter(
+                            x=valid_rsi["Date"], y=valid_rsi["RSI"],
+                            mode="lines", name="RSI(14)",
+                            line=dict(color="#8b5cf6", width=1.2),
+                        ), row=cur_row, col=1)
+                        valid_rsi_ma = tech_df.dropna(subset=["RSI_MA"])
+                        fig_tech.add_trace(go.Scatter(
+                            x=valid_rsi_ma["Date"], y=valid_rsi_ma["RSI_MA"],
+                            mode="lines", name="RSI MA",
+                            line=dict(color="#f59e0b", width=0.8, dash="dash"),
+                        ), row=cur_row, col=1)
+                        fig_tech.add_hline(y=70, line_dash="dash", line_color="#ef4444",
+                                           line_width=0.5, row=cur_row, col=1)
+                        fig_tech.add_hline(y=30, line_dash="dash", line_color="#22c55e",
+                                           line_width=0.5, row=cur_row, col=1)
+                        fig_tech.update_yaxes(title_text="RSI", range=[10, 90], row=cur_row, col=1)
+
+                    elif sub_name == "MACD":
+                        valid_macd = tech_df.dropna(subset=["MACD"])
+                        fig_tech.add_trace(go.Scatter(
+                            x=valid_macd["Date"], y=valid_macd["MACD"],
+                            mode="lines", name="MACD",
+                            line=dict(color="#3b82f6", width=1),
+                        ), row=cur_row, col=1)
+                        fig_tech.add_trace(go.Scatter(
+                            x=valid_macd["Date"], y=valid_macd["MACD_Signal"],
+                            mode="lines", name="Signal",
+                            line=dict(color="#f59e0b", width=1, dash="dash"),
+                        ), row=cur_row, col=1)
+                        colors_macd = ["#22c55e" if v >= 0 else "#ef4444"
+                                       for v in valid_macd["MACD_Hist"]]
+                        fig_tech.add_trace(go.Bar(
+                            x=valid_macd["Date"], y=valid_macd["MACD_Hist"],
+                            name="Histogram", marker_color=colors_macd,
+                            showlegend=False,
+                        ), row=cur_row, col=1)
+                        fig_tech.update_yaxes(title_text="MACD", row=cur_row, col=1)
+
+                    elif sub_name == "Volume":
+                        vol_colors = ["#22c55e" if tech_df["Close"].iloc[i] >= tech_df["Open"].iloc[i]
+                                      else "#ef4444" for i in range(len(tech_df))]
+                        fig_tech.add_trace(go.Bar(
+                            x=tech_df["Date"], y=tech_df["Volume"],
+                            name="Volume", marker_color=vol_colors,
+                            opacity=0.5, showlegend=False,
+                        ), row=cur_row, col=1)
+                        fig_tech.update_yaxes(title_text="Vol", row=cur_row, col=1)
+
                     cur_row += 1
-                elif show_rs:
-                    cur_row += 1  # skip the allocated row
 
-                # RSI subplot
-                if show_rsi:
-                    valid_rsi = tech_df.dropna(subset=["RSI"])
-                    fig_tech.add_trace(go.Scatter(
-                        x=valid_rsi["Date"], y=valid_rsi["RSI"],
-                        mode="lines", name="RSI(14)",
-                        line=dict(color="#8b5cf6", width=1.2),
-                    ), row=cur_row, col=1)
-                    valid_rsi_ma = tech_df.dropna(subset=["RSI_MA"])
-                    fig_tech.add_trace(go.Scatter(
-                        x=valid_rsi_ma["Date"], y=valid_rsi_ma["RSI_MA"],
-                        mode="lines", name="RSI MA",
-                        line=dict(color="#f59e0b", width=0.8, dash="dash"),
-                    ), row=cur_row, col=1)
-                    fig_tech.add_hline(y=70, line_dash="dash", line_color="#ef4444",
-                                       line_width=0.5, row=cur_row, col=1)
-                    fig_tech.add_hline(y=30, line_dash="dash", line_color="#22c55e",
-                                       line_width=0.5, row=cur_row, col=1)
-                    fig_tech.update_yaxes(title_text="RSI", range=[10, 90], row=cur_row, col=1)
-                    cur_row += 1
-
-                # MACD subplot
-                if show_macd:
-                    valid_macd = tech_df.dropna(subset=["MACD"])
-                    fig_tech.add_trace(go.Scatter(
-                        x=valid_macd["Date"], y=valid_macd["MACD"],
-                        mode="lines", name="MACD",
-                        line=dict(color="#3b82f6", width=1),
-                    ), row=cur_row, col=1)
-                    fig_tech.add_trace(go.Scatter(
-                        x=valid_macd["Date"], y=valid_macd["MACD_Signal"],
-                        mode="lines", name="Signal",
-                        line=dict(color="#f59e0b", width=1, dash="dash"),
-                    ), row=cur_row, col=1)
-                    colors_macd = ["#22c55e" if v >= 0 else "#ef4444" for v in valid_macd["MACD_Hist"]]
-                    fig_tech.add_trace(go.Bar(
-                        x=valid_macd["Date"], y=valid_macd["MACD_Hist"],
-                        name="Histogram", marker_color=colors_macd,
-                        showlegend=False,
-                    ), row=cur_row, col=1)
-                    fig_tech.update_yaxes(title_text="MACD", row=cur_row, col=1)
-                    cur_row += 1
-
-                # Volume subplot
-                if show_vol:
-                    vol_colors = ["#22c55e" if tech_df["Close"].iloc[i] >= tech_df["Open"].iloc[i]
-                                  else "#ef4444" for i in range(len(tech_df))]
-                    fig_tech.add_trace(go.Bar(
-                        x=tech_df["Date"], y=tech_df["Volume"],
-                        name="Volume", marker_color=vol_colors,
-                        opacity=0.5, showlegend=False,
-                    ), row=cur_row, col=1)
-                    fig_tech.update_yaxes(title_text="Vol", row=cur_row, col=1)
-
-                chart_height = 350 + n_rows * 110
-                fig_tech.update_layout(
-                    height=chart_height,
-                    margin=dict(l=0, r=0, t=30, b=10),
-                    legend=dict(orientation="h", yanchor="top", y=1.04, xanchor="left", x=0,
-                                font=dict(size=10)),
-                    xaxis=dict(
-                        rangeslider=dict(visible=True, thickness=0.04),
+                chart_height = 400 + len(sub_configs) * 120
+                # Rangeslider goes on the LAST x-axis (bottom subplot) to avoid
+                # the Plotly candlestick rangeslider rendering bug
+                last_xaxis = f"xaxis{n_rows}" if n_rows > 1 else "xaxis"
+                layout_update = {
+                    "height": chart_height,
+                    "margin": dict(l=0, r=0, t=30, b=10),
+                    "legend": dict(orientation="h", yanchor="top", y=1.04,
+                                   xanchor="left", x=0, font=dict(size=10)),
+                    "plot_bgcolor": "rgba(0,0,0,0)",
+                    "paper_bgcolor": "rgba(0,0,0,0)",
+                    "dragmode": "zoom",
+                    "xaxis": dict(
                         rangeselector=dict(
                             buttons=[
                                 dict(count=1, label="1M", step="month", stepmode="backward"),
@@ -1800,11 +1801,18 @@ with tab_positions:
                             ],
                             bgcolor="#f3f4f6", activecolor="#355ec9",
                         ),
+                        rangeslider=dict(visible=False),
                     ),
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    dragmode="zoom",
-                )
+                }
+                # Put rangeslider on the bottom subplot axis
+                if n_rows > 1:
+                    layout_update[last_xaxis] = dict(
+                        rangeslider=dict(visible=True, thickness=0.05),
+                    )
+                else:
+                    layout_update["xaxis"]["rangeslider"] = dict(visible=True, thickness=0.05)
+
+                fig_tech.update_layout(**layout_update)
                 fig_tech.update_xaxes(showgrid=False)
                 fig_tech.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.05)")
                 st.plotly_chart(fig_tech, use_container_width=True, config={
@@ -1814,17 +1822,19 @@ with tab_positions:
                 })
 
                 # ── Statistical Edge Scorecard ────────────────
-                stats = compute_stats_model(
-                    tech_df,
-                    entry=pos.get("entry", 0),
-                    stop=pos.get("stop", 0),
-                    target=pos.get("target", 0),
-                )
+                _entry = pos.get("entry") or 0
+                _stop = pos.get("stop") or 0
+                _target = pos.get("target") or 0
+                # If target is 0 but we have entry, estimate 2:1 R:R target
+                if _target == 0 and _entry > 0 and _stop > 0:
+                    _target = _entry + 2 * abs(_entry - _stop)
+                stats = compute_stats_model(tech_df, entry=_entry, stop=_stop, target=_target)
 
                 st.markdown("**🎯 Statistical Edge Scorecard**")
                 sc1, sc2, sc3, sc4 = st.columns(4)
 
                 # Monte Carlo probabilities
+                _mc_note = "10K sims" if (pos.get("target") and pos["target"] > 0) else "10K sims · est. 2:1 target"
                 if stats["target_prob"] is not None:
                     sc1.markdown(
                         f'<div style="padding:8px;background:rgba(34,197,94,.06);'
@@ -1832,7 +1842,7 @@ with tab_positions:
                         f'<div style="font-size:10px;color:#666">Target Hit Prob</div>'
                         f'<div style="font-size:20px;font-weight:700;color:#22c55e">'
                         f'{stats["target_prob"]:.0f}%</div>'
-                        f'<div style="font-size:9px;color:#999">10K Monte Carlo sims</div>'
+                        f'<div style="font-size:9px;color:#999">{_mc_note}</div>'
                         f'</div>', unsafe_allow_html=True
                     )
                     sc2.markdown(
@@ -1845,7 +1855,7 @@ with tab_positions:
                         f'</div>', unsafe_allow_html=True
                     )
                 else:
-                    sc1.caption("Monte Carlo: need target & stop")
+                    sc1.caption("Monte Carlo: insufficient data")
                     sc2.caption("—")
 
                 # Momentum character
