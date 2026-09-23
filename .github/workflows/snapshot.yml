@@ -1,0 +1,38 @@
+name: Daily Price Snapshots
+
+on:
+  # Run at 3:45 PM IST (10:15 AM UTC) after NSE market close, Mon-Fri
+  schedule:
+    - cron: "15 10 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: "Run backfill from entry dates"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run snapshot
+        run: |
+          if [ "${{ github.event.inputs.backfill }}" = "true" ]; then
+            python snapshot_prices.py --backfill
+          else
+            python snapshot_prices.py
+          fi
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
