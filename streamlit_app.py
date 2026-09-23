@@ -2052,7 +2052,7 @@ with tab_system:
                 query = query.eq("source", "rzone_pnf_1pct")
             elif hist_source == "0.25% box":
                 query = query.eq("source", "rzone_pnf_025pct")
-            hist_rows = query.order("reading_date", desc=True).limit(100).execute().data or []
+            hist_rows = query.order("reading_date", desc=True).limit(500).execute().data or []
             if hist_rows:
                 bdf = pd.DataFrame(hist_rows)[["reading_date", "breadth_pct", "avg_breadth_pct", "source", "notes"]]
                 bdf["source"] = bdf["source"].map({"rzone_pnf_1pct": "1%", "rzone_pnf_025pct": "0.25%",
@@ -2062,7 +2062,9 @@ with tab_system:
 
                 # Breadth chart — overlay both sources when showing both
                 bdf_all = pd.DataFrame(hist_rows).sort_values("reading_date")
-                fig_b = go.Figure()
+                from plotly.subplots import make_subplots
+                fig_b = make_subplots(specs=[[{"secondary_y": True}]])
+
                 if hist_source == "Both":
                     for src, color, label in [("rzone_pnf_1pct", "#355ec9", "1% box"),
                                                ("rzone_pnf_025pct", "#10b981", "0.25% box")]:
@@ -2073,32 +2075,67 @@ with tab_system:
                                 y=src_df["breadth_pct"].astype(float),
                                 mode="lines", name=label,
                                 line=dict(color=color, width=2),
-                            ))
+                            ), secondary_y=False)
                 else:
                     fig_b.add_trace(go.Scatter(
                         x=bdf_all["reading_date"],
                         y=bdf_all["breadth_pct"].astype(float),
                         mode="lines+markers", name="P&F Breadth",
                         line=dict(color="#355ec9", width=2), marker=dict(size=4),
-                    ))
+                    ), secondary_y=False)
                     if bdf_all["avg_breadth_pct"].notna().any():
                         fig_b.add_trace(go.Scatter(
                             x=bdf_all["reading_date"],
                             y=bdf_all["avg_breadth_pct"].astype(float),
                             mode="lines", name="Average",
                             line=dict(color="#eb6834", width=1, dash="dash"),
-                        ))
+                        ), secondary_y=False)
+
+                # Overlay Nifty 50 price on secondary y-axis
+                if nifty and nifty.get("chart") is not None:
+                    nifty_chart = nifty["chart"]
+                    # Filter to match breadth date range
+                    min_date = bdf_all["reading_date"].min()
+                    nifty_in_range = nifty_chart[nifty_chart["Date"] >= min_date]
+                    if not nifty_in_range.empty:
+                        fig_b.add_trace(go.Scatter(
+                            x=nifty_in_range["Date"],
+                            y=nifty_in_range["Close"],
+                            mode="lines", name="Nifty 50",
+                            line=dict(color="#a855f7", width=1.5, dash="dot"),
+                            opacity=0.6,
+                        ), secondary_y=True)
+
                 # Tier reference lines
                 for thr, lbl in [(40, "T1"), (35, "T2"), (30, "T3"), (25, "T4"), (20, "T5")]:
                     fig_b.add_hline(y=thr, line_dash="dot", line_color="#ccc", line_width=1,
                                     annotation_text=lbl, annotation_position="right",
                                     annotation_font_size=9, annotation_font_color="#aaa")
+
                 fig_b.update_layout(
-                    height=280, margin=dict(l=0, r=0, t=10, b=10),
-                    xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#eef0f3", title="%"),
+                    height=380, margin=dict(l=0, r=0, t=10, b=10),
                     plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    # Range slider + zoom buttons
+                    xaxis=dict(
+                        showgrid=False,
+                        rangeslider=dict(visible=True, thickness=0.06),
+                        rangeselector=dict(
+                            buttons=[
+                                dict(count=7, label="1W", step="day", stepmode="backward"),
+                                dict(count=1, label="1M", step="month", stepmode="backward"),
+                                dict(count=3, label="3M", step="month", stepmode="backward"),
+                                dict(step="all", label="All"),
+                            ],
+                            bgcolor="#f3f4f6", activecolor="#355ec9",
+                            font=dict(size=11),
+                        ),
+                    ),
                 )
+                fig_b.update_yaxes(title_text="Breadth %", showgrid=True, gridcolor="#eef0f3",
+                                    secondary_y=False)
+                fig_b.update_yaxes(title_text="Nifty 50", showgrid=False,
+                                    secondary_y=True)
                 st.plotly_chart(fig_b, use_container_width=True)
             else:
                 st.info("No breadth readings yet.")
