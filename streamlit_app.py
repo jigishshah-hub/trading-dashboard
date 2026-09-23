@@ -2111,6 +2111,8 @@ with tab_system:
         csv_source = st.selectbox("Import as source", ["rzone_pnf_1pct", "rzone_pnf_025pct"],
                                    format_func=lambda x: "1% box" if "1pct" in x and "025" not in x else "0.25% box",
                                    key="csv_import_source")
+        sma_period = st.number_input("SMA period for Avg %", min_value=2, max_value=50, value=5,
+                                      help="Rolling average window (trading days). Applied when CSV has no Average column.")
         csv_file = st.file_uploader("Choose CSV file", type=["csv"], key="breadth_csv")
         if csv_file:
             try:
@@ -2119,21 +2121,51 @@ with tab_system:
 
                 # Auto-detect columns
                 date_col = next((c for c in raw.columns if "date" in c.lower()), None)
-                val_col = next((c for c in raw.columns if "breadth" in c.lower() or "x percent" in c.lower()), None)
+                val_col = next((c for c in raw.columns if "breadth" in c.lower() or "value" in c.lower() or "x percent" in c.lower()), None)
                 avg_col = next((c for c in raw.columns if "average" in c.lower() or "avg" in c.lower()), None)
 
                 if date_col and val_col:
                     src_label = "1%" if "1pct" in csv_source and "025" not in csv_source else "0.25%"
+
+                    # Clean percentage strings: "62.00%" → 62.0
+                    def _clean_pct(v):
+                        if pd.isna(v):
+                            return None
+                        s = str(v).strip().rstrip("%").strip()
+                        try:
+                            return float(s)
+                        except ValueError:
+                            return None
+
+                    raw["_clean_val"] = raw[val_col].apply(_clean_pct)
+                    # Parse dates with dayfirst=True (DD/MM/YYYY from Rzone)
+                    raw["_clean_date"] = pd.to_datetime(raw[date_col], dayfirst=True, errors="coerce")
+                    raw = raw.dropna(subset=["_clean_date", "_clean_val"])
+                    raw = raw.sort_values("_clean_date")
+
+                    # Compute SMA if CSV has no avg column
+                    if avg_col:
+                        raw["_clean_avg"] = raw[avg_col].apply(_clean_pct)
+                    else:
+                        raw["_clean_avg"] = raw["_clean_val"].rolling(window=sma_period, min_periods=1).mean().round(2)
+
+                    valid_count = len(raw)
                     st.success(f"Detected: Date=`{date_col}`, Breadth=`{val_col}`" +
-                               (f", Avg=`{avg_col}`" if avg_col else "") +
-                               f" → importing as **{src_label} box**")
-                    if st.button(f"📥 Import {len(raw)} rows as {src_label}", type="primary"):
+                               (f", Avg=`{avg_col}`" if avg_col else f" (Avg = {sma_period}-day SMA, computed)") +
+                               f" → importing **{valid_count} rows** as **{src_label} box**")
+
+                    # Preview cleaned data
+                    preview = raw[["_clean_date", "_clean_val", "_clean_avg"]].tail(10).copy()
+                    preview.columns = ["Date", "Breadth %", f"Avg % ({sma_period}d SMA)"]
+                    st.dataframe(preview, use_container_width=True, hide_index=True)
+
+                    if st.button(f"📥 Import {valid_count} rows as {src_label}", type="primary"):
                         imported = 0
                         for _, row in raw.iterrows():
                             try:
-                                rd = pd.to_datetime(row[date_col]).strftime("%Y-%m-%d")
-                                bv = float(row[val_col])
-                                av = float(row[avg_col]) if avg_col and pd.notna(row.get(avg_col)) else None
+                                rd = row["_clean_date"].strftime("%Y-%m-%d")
+                                bv = row["_clean_val"]
+                                av = row["_clean_avg"]
                                 _sb().table("breadth_readings").upsert({
                                     "reading_date": rd, "source": csv_source,
                                     "breadth_pct": bv, "avg_breadth_pct": av,
@@ -2142,10 +2174,10 @@ with tab_system:
                                 imported += 1
                             except Exception:
                                 continue
-                        st.success(f"✅ Imported {imported}/{len(raw)} {src_label} readings")
+                        st.success(f"✅ Imported {imported}/{valid_count} {src_label} readings")
                         st.cache_data.clear()
                 else:
-                    st.warning("Could not auto-detect columns. Ensure CSV has a `Date` column and a breadth value column.")
+                    st.warning("Could not auto-detect columns. Ensure CSV has a `Date` column and a breadth value column (containing 'breadth', 'value', or 'x percent').")
             except Exception as e:
                 st.error(f"CSV parse error: {e}")
 
