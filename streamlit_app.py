@@ -1453,118 +1453,136 @@ with tab_perf:
         snapshots = D.get("snapshots", [])
         has_snapshots = len(snapshots) > 0
 
-        # Compute realized P&L from closed trades
-        realized_pnl = 0
-        exit_pnl_events = []  # (exit_date, pnl_amount)
-        for cl in D.get("closed", []):
-            exit_date = cl.get("exit_date")
-            exit_price = f(cl.get("exit_price"))
-            pm = next((p for p in D["pos"] if p["trade_id"] == cl["trade_id"]), None)
-            if pm and exit_price:
-                entry_price = f(pm.get("entry_price"))
-                qty = f(pm.get("quantity"))
-                if entry_price and qty:
-                    pnl = (exit_price - entry_price) * qty
-                    realized_pnl += pnl
-                    if exit_date:
-                        exit_pnl_events.append((exit_date, pnl))
-        exit_pnl_events.sort()
-
         if has_snapshots:
-            # Track total P&L (unrealized + cumulative realized) over time.
-            # When a position exits, unrealized drops but realized jumps by the
-            # same P&L amount — total P&L stays continuous, no artificial cliff
-            # from capital rotation (exit proceeds redeployed into new positions).
+            # ── Portfolio Value = Stock (open positions) + Cash ──
+            # Cash tracks capital not currently deployed in positions.
+            # Entry → cash decreases by cost basis.
+            # Exit  → cash increases by exit proceeds.
+            # This keeps portfolio value continuous through capital rotation:
+            # when a position exits, stock drops but cash rises by the same
+            # proceeds, so portfolio stays flat (± P&L). When that cash funds
+            # a new position, cash drops but stock rises by the new cost.
             from collections import defaultdict
 
-            # Build cost basis lookup: trade_id -> entry_price * quantity
-            cost_basis_map = {}
+            # Build cash flow events: (date, amount)
+            # Negative = capital deployed (buy), Positive = capital returned (sell)
+            cash_events = []
+            cost_basis_map = {}  # trade_id -> cost_basis
             for pm in D["pos"]:
                 tid = pm.get("trade_id")
                 ep = f(pm.get("entry_price"))
                 qty = f(pm.get("quantity"))
+                ed = pm.get("entry_date")
                 if tid and ep and qty:
-                    cost_basis_map[tid] = ep * qty
+                    cb = ep * qty
+                    cost_basis_map[tid] = cb
+                    if ed:
+                        cash_events.append((ed, -cb))
 
-            # Sum unrealized P&L by date from snapshots
-            daily_unrealized = defaultdict(float)
+            realized_pnl = 0
+            for cl in D.get("closed", []):
+                tid = cl.get("trade_id")
+                exit_date = cl.get("exit_date")
+                exit_price = f(cl.get("exit_price"))
+                if tid in cost_basis_map and exit_date and exit_price:
+                    qty_pm = next((p for p in D["pos"] if p["trade_id"] == tid), None)
+                    qty = f(qty_pm.get("quantity")) if qty_pm else None
+                    if qty:
+                        proceeds = exit_price * qty
+                        cash_events.append((exit_date, proceeds))
+                        realized_pnl += proceeds - cost_basis_map[tid]
+
+            cash_events.sort()
+
+            # Initial capital = enough so cash never goes negative
+            # (= maximum capital simultaneously deployed at any point)
+            cum = 0
+            min_cum = 0
+            for _, amt in cash_events:
+                cum += amt
+                min_cum = min(min_cum, cum)
+            initial_capital = -min_cum if min_cum < 0 else 0
+
+            # Sum open positions' market value by date from snapshots
+            daily_stock = defaultdict(float)
             for snap in snapshots:
                 sd = snap.get("snapshot_date")
                 pv = f(snap.get("position_value"))
-                tid = snap.get("trade_id")
-                if sd and pv is not None and tid and tid in cost_basis_map:
-                    daily_unrealized[sd] += (pv - cost_basis_map[tid])
+                if sd and pv is not None:
+                    daily_stock[sd] += pv
 
-            # Total P&L each day = unrealized + cumulative realized to that date
-            sorted_dates = sorted(daily_unrealized.keys())
-            daily_pnl = []
+            # Portfolio(D) = stock(D) + cash(D)
+            # cash(D) = initial_capital + Σ cash_events on or before D
+            sorted_dates = sorted(daily_stock.keys())
+            daily_portfolio = []
             for d in sorted_dates:
-                unrealized = daily_unrealized[d]
-                cum_realized = sum(pnl for ed, pnl in exit_pnl_events if ed <= d)
-                daily_pnl.append(unrealized + cum_realized)
+                stock = daily_stock[d]
+                cash = initial_capital + sum(amt for ed, amt in cash_events if ed <= d)
+                daily_portfolio.append(stock + cash)
 
-            # Add today's live P&L
+            # Add today's live value
             today_str = datetime.now().strftime("%Y-%m-%d")
-            today_unrealized = sum(p["current_value"] - p["cost_basis"] for p in positions)
-            today_total_pnl = today_unrealized + realized_pnl
+            active_stock = sum(p["current_value"] for p in positions)
+            today_cash = initial_capital + sum(amt for _, amt in cash_events)
+            today_portfolio = active_stock + today_cash
             if today_str not in set(sorted_dates):
                 sorted_dates = list(sorted_dates) + [today_str]
-                daily_pnl.append(today_total_pnl)
+                daily_portfolio.append(today_portfolio)
+            else:
+                # Replace snapshot-date value with live
+                idx = sorted_dates.index(today_str)
+                daily_portfolio[idx] = today_portfolio
 
-            # Peak P&L and drawdown
-            peak_pnl = max(daily_pnl) if daily_pnl else today_total_pnl
-            current_pnl = daily_pnl[-1] if daily_pnl else today_total_pnl
-            pnl_dd = current_pnl - peak_pnl  # absolute drawdown in ₹
+            # Peak and drawdown
+            peak_val = max(daily_portfolio) if daily_portfolio else today_portfolio
+            current_val = daily_portfolio[-1] if daily_portfolio else today_portfolio
+            dd_from_peak = ((current_val - peak_val) / peak_val * 100) if peak_val > 0 else 0
 
-            # Drawdown % relative to total capital ever deployed
-            total_capital = sum(p["cost_basis"] for p in positions)
-            for pm in D["pos"]:
-                if pm.get("status") == "exited":
-                    ep = f(pm.get("entry_price"))
-                    qty = f(pm.get("quantity"))
-                    if ep and qty:
-                        total_capital += ep * qty
-            dd_from_peak = (pnl_dd / total_capital * 100) if total_capital > 0 else 0
-
-            # Max drawdown (worst peak-to-trough on P&L curve)
+            # Max drawdown (worst peak-to-trough)
             max_dd = 0
-            running_peak_pnl = daily_pnl[0] if daily_pnl else 0
-            for v in daily_pnl:
-                if v > running_peak_pnl:
-                    running_peak_pnl = v
-                dd_abs = v - running_peak_pnl
-                dd_pct = (dd_abs / total_capital * 100) if total_capital > 0 else 0
-                if dd_pct < max_dd:
-                    max_dd = dd_pct
+            running_peak = 0
+            for v in daily_portfolio:
+                if v > running_peak:
+                    running_peak = v
+                dd = ((v - running_peak) / running_peak * 100) if running_peak > 0 else 0
+                if dd < max_dd:
+                    max_dd = dd
 
-            current_val = sum(p["current_value"] for p in positions)
-            peak_val = total_capital  # for display context
-            st.caption(f"P&L-based drawdown · {len(sorted_dates)} trading days")
+            st.caption(f"Stock + Cash · {len(sorted_dates)} trading days · Capital: {fmt(initial_capital)}")
         else:
             # Fallback: estimate from positions
+            realized_pnl = 0
+            for cl in D.get("closed", []):
+                exit_price = f(cl.get("exit_price"))
+                pm_c = next((p for p in D["pos"] if p["trade_id"] == cl["trade_id"]), None)
+                if pm_c and exit_price:
+                    ep_c = f(pm_c.get("entry_price"))
+                    qty_c = f(pm_c.get("quantity"))
+                    if ep_c and qty_c:
+                        realized_pnl += (exit_price - ep_c) * qty_c
             current_val = total_value
-            total_capital = sum(p["cost_basis"] for p in positions)
-            today_unrealized = current_val - total_capital
-            today_total_pnl = today_unrealized + realized_pnl
-            peak_pnl = max(today_total_pnl, 0)
-            dd_from_peak = 0
-            max_dd = 0
+            peak_val = sum(max(p["current_value"], p["cost_basis"]) for p in positions)
+            dd_from_peak = ((current_val - peak_val) / peak_val * 100) if peak_val > 0 else 0
+            max_dd = dd_from_peak
+            initial_capital = sum(p["cost_basis"] for p in positions)
+            today_cash = 0
+            active_stock = current_val
             st.caption("Estimated from position cost basis vs current")
 
         dd_color = RED if dd_from_peak < -5 else AMBER if dd_from_peak < 0 else GREEN
 
-        if True:
+        if peak_val > 0:
             m1, m2, m3 = st.columns(3)
-            m1.metric("Total P&L", fmt(today_total_pnl), delta=f"{today_total_pnl:+,.0f}")
-            m2.metric("Unrealized", fmt(today_unrealized), delta=f"{today_unrealized:+,.0f}")
-            m3.metric("Realized", fmt(realized_pnl), delta=f"{realized_pnl:+,.0f}")
+            m1.metric("Portfolio Value", fmt(current_val))
+            m2.metric("Stock", fmt(active_stock))
+            m3.metric("Cash", fmt(today_cash))
 
             st.markdown(
                 f'<div style="text-align:center;padding:16px;margin:8px 0;border-radius:10px;'
                 f'background:{dd_color}10;border:1px solid {dd_color}30">'
-                f'<div style="font-size:11px;text-transform:uppercase;color:{MUTED};letter-spacing:0.04em">P&L Drawdown from Peak</div>'
+                f'<div style="font-size:11px;text-transform:uppercase;color:{MUTED};letter-spacing:0.04em">Drawdown from Peak</div>'
                 f'<div style="font-size:28px;font-weight:800;color:{dd_color}">{dd_from_peak:+.1f}%</div>'
-                f'<div style="font-size:11px;color:{MUTED}">Max drawdown: {max_dd:+.1f}% · Peak P&L: {fmt(peak_pnl)}</div>'
+                f'<div style="font-size:11px;color:{MUTED}">Max drawdown: {max_dd:+.1f}% · Peak: {fmt(peak_val)} · Realized P&L: {fmt(realized_pnl)}</div>'
                 f'</div>', unsafe_allow_html=True)
 
             st.markdown("")
