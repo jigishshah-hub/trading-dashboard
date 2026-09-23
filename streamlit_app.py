@@ -1289,7 +1289,53 @@ with tab_positions:
                     st.markdown("**📰 Recent announcements**")
                     for n in tnews:
                         sev = n.get("severity_tag", "routine update")
-                        st.text(f"  {sev_icon(sev)} [{(n.get('source') or '').upper()}] {(n.get('headline') or '')[:70]} ({short_date(n.get('published_at'))})")
+                        headline = n.get("headline") or ""
+                        reasoning = n.get("severity_reasoning") or ""
+                        snippet = n.get("body_snippet") or ""
+                        url = n.get("url") or ""
+                        source = n.get("source") or ""
+                        date_str = short_date(n.get("published_at"))
+
+                        # Context: prefer body_snippet, fall back to severity_reasoning
+                        context = snippet or reasoning
+                        context_html = ""
+                        if context:
+                            context_html = (
+                                f'<div style="font-size:11px;color:#666;margin-top:2px;'
+                                f'line-height:1.3;white-space:normal">{context}</div>'
+                            )
+
+                        # Source label + link
+                        source_label = "NSE Filing" if source == "nse" else "Google News" if source == "google_news" else source
+                        link_html = ""
+                        if url and url.startswith("http"):
+                            link_html = (
+                                f' · <a href="{url}" target="_blank" '
+                                f'style="color:#2563eb;text-decoration:none;font-size:11px">'
+                                f'{source_label} ↗</a>'
+                            )
+                        else:
+                            link_html = f' · {source_label}' if source_label else ''
+
+                        # Border color by severity
+                        if sev == "thesis-threatening":
+                            border = "#ef4444"; bg = "rgba(239,68,68,.05)"
+                        elif sev == "material change":
+                            border = "#f59e0b"; bg = "rgba(245,158,11,.04)"
+                        else:
+                            border = "#d1d5db"; bg = "rgba(0,0,0,.02)"
+
+                        st.markdown(
+                            f'<div style="padding:8px 10px;margin:3px 0;background:{bg};'
+                            f'border-left:3px solid {border};border-radius:3px">'
+                            f'<div style="font-size:12px;font-weight:500;line-height:1.3">'
+                            f'{sev_icon(sev)} {headline}</div>'
+                            f'{context_html}'
+                            f'<div style="font-size:10px;color:#999;margin-top:3px">'
+                            f'{date_str}{link_html}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
 
             # Fundamentals
             snap = next((s for s in D["fundsnap"] if s.get("ticker") == sel_ticker), None)
