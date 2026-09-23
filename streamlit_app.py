@@ -1785,12 +1785,17 @@ with tab_positions:
                     specs=[[s] for s in row_specs],
                 )
 
-                # Candlestick
+                # Candlestick — with OHLCV hover
                 fig_tech.add_trace(go.Candlestick(
                     x=tech_df["Date"], open=tech_df["Open"],
                     high=tech_df["High"], low=tech_df["Low"],
                     close=tech_df["Close"], name="Price",
                     increasing_line_color="#22c55e", decreasing_line_color="#ef4444",
+                    text=[f"O: ₹{o:,.1f}<br>H: ₹{h:,.1f}<br>L: ₹{l:,.1f}<br>C: ₹{c:,.1f}<br>Vol: {v:,.0f}"
+                          for o, h, l, c, v in zip(tech_df["Open"], tech_df["High"],
+                                                    tech_df["Low"], tech_df["Close"],
+                                                    tech_df["Volume"])],
+                    hoverinfo="text+x",
                 ), row=1, col=1)
 
                 # EMAs
@@ -1803,6 +1808,7 @@ with tab_positions:
                                 x=valid["Date"], y=valid[col_name],
                                 mode="lines", name=col_name,
                                 line=dict(color=clr, width=1),
+                                hovertemplate=f"{col_name}: ₹%{{y:,.1f}}<extra></extra>",
                             ), row=1, col=1)
 
                 # Bollinger Bands
@@ -1812,6 +1818,7 @@ with tab_positions:
                         x=valid_bb["Date"], y=valid_bb["BB_Upper"],
                         mode="lines", name="BB Upper",
                         line=dict(color="#94a3b8", width=0.8, dash="dash"),
+                        hovertemplate="BB Upper: ₹%{y:,.1f}<extra></extra>",
                         showlegend=False,
                     ), row=1, col=1)
                     fig_tech.add_trace(go.Scatter(
@@ -1819,6 +1826,7 @@ with tab_positions:
                         mode="lines", name="BB Lower",
                         line=dict(color="#94a3b8", width=0.8, dash="dash"),
                         fill="tonexty", fillcolor="rgba(148,163,184,0.08)",
+                        hovertemplate="BB Lower: ₹%{y:,.1f}<extra></extra>",
                         showlegend=False,
                     ), row=1, col=1)
 
@@ -1845,11 +1853,13 @@ with tab_positions:
                                 x=rs_df["Date"], y=rs_df["RS"],
                                 mode="lines", name=f"RS vs {rs_bench}",
                                 line=dict(color="#0ea5e9", width=1.5),
+                                hovertemplate=f"RS vs {rs_bench}: %{{y:.1f}}<extra></extra>",
                             ), row=cur_row, col=1)
                             fig_tech.add_trace(go.Scatter(
                                 x=rs_df["Date"], y=rs_df["RS_MA"],
                                 mode="lines", name="RS MA(20)",
                                 line=dict(color="#0ea5e9", width=0.8, dash="dash"),
+                                hovertemplate="RS MA(20): %{y:.1f}<extra></extra>",
                                 showlegend=False,
                             ), row=cur_row, col=1)
                             fig_tech.add_hline(y=100, line_dash="dot", line_color="#94a3b8",
@@ -1862,12 +1872,14 @@ with tab_positions:
                             x=valid_rsi["Date"], y=valid_rsi["RSI"],
                             mode="lines", name="RSI(14)",
                             line=dict(color="#8b5cf6", width=1.2),
+                            hovertemplate="RSI: %{y:.1f}<extra></extra>",
                         ), row=cur_row, col=1)
                         valid_rsi_ma = tech_df.dropna(subset=["RSI_MA"])
                         fig_tech.add_trace(go.Scatter(
                             x=valid_rsi_ma["Date"], y=valid_rsi_ma["RSI_MA"],
                             mode="lines", name="RSI MA",
                             line=dict(color="#f59e0b", width=0.8, dash="dash"),
+                            hovertemplate="RSI MA: %{y:.1f}<extra></extra>",
                         ), row=cur_row, col=1)
                         fig_tech.add_hline(y=70, line_dash="dash", line_color="#ef4444",
                                            line_width=0.5, row=cur_row, col=1)
