@@ -202,12 +202,27 @@ def snapshot_today(sb, positions):
 
 
 def backfill(sb, positions):
-    """Pull full history from each position's entry date to today."""
+    """Pull full history from each position's entry date to exit date (or today
+    for active positions).  Exited positions should NOT have snapshots after
+    their exit date — that was the root cause of incorrect drawdown numbers."""
     today = datetime.now().strftime("%Y-%m-%d")
 
     if not positions:
         print("No positions found.")
         return
+
+    # Build exit-date lookup from trade_history so exited positions
+    # only get snapshots up to their exit date (not through today).
+    exit_dates = {}
+    try:
+        th = sb.table("trade_history").select("trade_id, exit_date").execute()
+        for row in (th.data or []):
+            tid = row.get("trade_id")
+            ed = row.get("exit_date")
+            if tid and ed:
+                exit_dates[tid] = ed
+    except Exception as e:
+        print(f"  ⚠ Could not load trade_history for exit dates: {e}")
 
     print(f"Backfilling {len(positions)} positions to {today}")
 
@@ -230,9 +245,14 @@ def backfill(sb, positions):
             entry_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
             print(f"  ⚠ {ticker}: no entry_date, using {entry_date}")
 
-        print(f"  → {ticker} ({trade_id}): {entry_date} to {today} ...", end=" ")
+        # Exited positions: stop at exit date, not today
+        end_date = today
+        if status == "exited" and trade_id in exit_dates:
+            end_date = exit_dates[trade_id]
 
-        rows = fetch_ohlcv(ticker, entry_date, today)
+        print(f"  → {ticker} ({trade_id}): {entry_date} to {end_date} ...", end=" ")
+
+        rows = fetch_ohlcv(ticker, entry_date, end_date)
         if rows:
             n = upsert_snapshots(sb, ticker, trade_id, qty, rows)
             print(f"{n} rows")
