@@ -1871,13 +1871,36 @@ with tab_thesis:
             ticker = n.get("ticker", "")
             headline = n.get("headline", "")
             reasoning = n.get("severity_reasoning") or ""
+            snippet = n.get("body_snippet") or ""
+            url = n.get("url") or ""
+            source = n.get("source") or ""
             border = "#ef4444" if sev == "thesis-threatening" else "#f59e0b"
             bg = "rgba(239,68,68,.04)" if sev == "thesis-threatening" else "rgba(245,158,11,.03)"
+
+            # Build context line: prefer body_snippet, fall back to severity_reasoning
+            context = snippet or reasoning
+            context_html = ""
+            if context:
+                context_html = (
+                    f'<div style="font-size:12px;color:#555;margin-top:3px;line-height:1.4">'
+                    f'{context}</div>'
+                )
+
+            # Source badge + link
+            source_label = "NSE Filing" if source == "nse" else "Google News" if source == "google_news" else source
+            date_str = short_date(n.get("published_at"))
+            meta_parts = [f'{date_str}' if date_str else '', f'{sev}']
+            if url and url.startswith("http"):
+                meta_parts.append(f'<a href="{url}" target="_blank" style="color:#2563eb;text-decoration:none">{source_label} ↗</a>')
+            else:
+                meta_parts.append(source_label)
+            meta_html = ' · '.join(p for p in meta_parts if p)
+
             st.markdown(
-                f'<div style="padding:8px 12px;margin:3px 0;background:{bg};border-left:3px solid {border};border-radius:3px">'
-                f'<span style="font-size:13px">{sev_icon(sev)} <strong>{ticker}</strong> — {headline}</span><br/>'
-                f'<span style="font-size:11px;color:#777">{short_date(n.get("published_at"))} · {sev}</span>'
-                f'{"<br/><span style=font-size:11px;color:#555;font-style:italic>⚡ " + reasoning + "</span>" if reasoning else ""}'
+                f'<div style="padding:10px 14px;margin:4px 0;background:{bg};border-left:3px solid {border};border-radius:4px">'
+                f'<div style="font-size:13px;font-weight:500">{sev_icon(sev)} <strong>{ticker}</strong> — {headline}</div>'
+                f'{context_html}'
+                f'<div style="font-size:11px;color:#888;margin-top:4px">{meta_html}</div>'
                 f'</div>', unsafe_allow_html=True)
     else:
         st.success("No material news alerts.")
