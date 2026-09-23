@@ -202,7 +202,9 @@ def fetch_stock_history(ticker, period="2y"):
         df = hist[["Open", "High", "Low", "Close", "Volume"]].reset_index()
         df.columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
         df["Date"] = df["Date"].dt.tz_localize(None)
-        return df
+        # Drop rows with NaN in OHLC — yfinance returns NaN for holidays/splits
+        df = df.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(drop=True)
+        return df if len(df) > 0 else None
     except Exception:
         return None
 
@@ -285,9 +287,25 @@ def compute_technicals(df):
 
 def compute_stats_model(df, entry, stop, target):
     """Statistical edge model: Monte Carlo, MFE/MAE, momentum, volatility."""
-    closes = df["Close"].values
+    closes = df["Close"].dropna().values
+    if len(closes) < 20:
+        return {k: None for k in [
+            "momentum_char", "momentum_advice", "autocorr", "atr", "atr_pct",
+            "stop_atr", "target_atr", "bb_pctile", "target_prob", "stop_prob",
+            "chop_prob", "mfe_further", "mfe_pullback", "std_daily",
+            "big_move_pct", "current_streak", "streak_dir", "pct_from_entry",
+        ]}
     cmp = closes[-1]
     daily_returns = np.diff(closes) / closes[:-1]
+    # Remove NaN/inf — yfinance data can have gaps
+    daily_returns = daily_returns[np.isfinite(daily_returns)]
+    if len(daily_returns) < 20:
+        return {k: None for k in [
+            "momentum_char", "momentum_advice", "autocorr", "atr", "atr_pct",
+            "stop_atr", "target_atr", "bb_pctile", "target_prob", "stop_prob",
+            "chop_prob", "mfe_further", "mfe_pullback", "std_daily",
+            "big_move_pct", "current_streak", "streak_dir", "pct_from_entry",
+        ]}
 
     # 1. Momentum character — autocorrelation of returns
     if len(daily_returns) > 20:
@@ -661,15 +679,20 @@ for p in active:
     targets = conds_for(p["trade_id"], "target")
     t1 = None
     if targets:
-        # Try numeric fields first, then extract first number from description
-        t1 = f(targets[0].get("trigger_value")) or f(targets[0].get("price_level"))
+        # Try numeric fields first, then extract from description
+        tv = f(targets[0].get("trigger_value"))
+        pl = f(targets[0].get("price_level"))
+        t1 = tv if (tv and tv > 0) else (pl if (pl and pl > 0) else None)
         if t1 is None:
             import re as _re
             desc = str(targets[0].get("description") or "")
-            # Extract first number (with optional decimals) from description
-            m = _re.search(r'[\d,]+\.?\d*', desc.replace(",", ""))
-            if m:
-                t1 = f(m.group())
+            # Extract meaningful price number from description (skip small numbers like "Target 1")
+            nums = _re.findall(r'[\d,]+\.?\d*', desc.replace(",", ""))
+            for n in nums:
+                val = f(n)
+                if val and val > 10:  # skip ordinals like "Target 1"
+                    t1 = val
+                    break
 
     # Thesis status from news
     ticker_news = [n for n in D["news"] if n.get("ticker") == ticker]
@@ -1831,6 +1854,10 @@ with tab_positions:
                 stats = compute_stats_model(tech_df, entry=_entry, stop=_stop, target=_target)
 
                 st.markdown("**🎯 Statistical Edge Scorecard**")
+
+                # Debug: show actual values being used (can remove later)
+                st.caption(f"📊 Debug — Entry: ₹{_entry:,.0f} | Stop: ₹{_stop:,.0f} | Target: ₹{_target:,.0f} | CMP: ₹{tech_df['Close'].iloc[-1]:,.0f} | ATR: {stats.get('atr') or '—'}")
+
                 sc1, sc2, sc3, sc4 = st.columns(4)
 
                 # Monte Carlo probabilities
@@ -1859,16 +1886,17 @@ with tab_positions:
                     sc2.caption("—")
 
                 # Momentum character
-                ac = stats["autocorr"]
-                mc_color = "#3b82f6" if stats["momentum_char"] == "Trending" else (
-                    "#f59e0b" if stats["momentum_char"] == "Mean-reverting" else "#94a3b8")
+                ac = stats["autocorr"] or 0.0
+                momentum_char = stats["momentum_char"] or "—"
+                mc_color = "#3b82f6" if momentum_char == "Trending" else (
+                    "#f59e0b" if momentum_char == "Mean-reverting" else "#94a3b8")
                 sc3.markdown(
                     f'<div style="padding:8px;background:rgba(59,130,246,.06);'
                     f'border-radius:6px;text-align:center">'
                     f'<div style="font-size:10px;color:#666">Momentum</div>'
                     f'<div style="font-size:16px;font-weight:700;color:{mc_color}">'
-                    f'{stats["momentum_char"]}</div>'
-                    f'<div style="font-size:9px;color:#999">ρ = {ac:.3f} · {stats["momentum_advice"]}</div>'
+                    f'{momentum_char}</div>'
+                    f'<div style="font-size:9px;color:#999">ρ = {ac:.3f} · {stats["momentum_advice"] or ""}</div>'
                     f'</div>', unsafe_allow_html=True
                 )
 
@@ -1902,20 +1930,21 @@ with tab_positions:
                         f'-{stats["mfe_pullback"]:.1f}%</div>'
                         f'</div>', unsafe_allow_html=True
                     )
-                    streak_icon = "🟢" if stats["streak_dir"] == "green" else "🔴"
+                    streak_icon = "🟢" if stats.get("streak_dir") == "green" else "🔴"
                     mf3.markdown(
                         f'<div style="padding:6px;text-align:center">'
                         f'<div style="font-size:10px;color:#666">Current Streak</div>'
                         f'<div style="font-size:16px;font-weight:600">'
-                        f'{streak_icon} {stats["current_streak"]} day(s)</div>'
+                        f'{streak_icon} {stats.get("current_streak", 0)} day(s)</div>'
                         f'</div>', unsafe_allow_html=True
                     )
-                    big_move = stats.get("big_move_pct")
+                    big_move = stats.get("big_move_pct") or 0
+                    std_d = stats.get("std_daily") or 0
                     mf4.markdown(
                         f'<div style="padding:6px;text-align:center">'
                         f'<div style="font-size:10px;color:#666">Daily σ / Big Move %</div>'
                         f'<div style="font-size:16px;font-weight:600">'
-                        f'{stats["std_daily"]:.2f}% / {big_move:.0f}%</div>'
+                        f'{std_d:.2f}% / {big_move:.0f}%</div>'
                         f'</div>', unsafe_allow_html=True
                     )
 
@@ -1928,9 +1957,9 @@ with tab_positions:
                         signals.append("🔴 High stop probability — consider reducing or tightening stop")
                     elif stats["chop_prob"] > 50:
                         signals.append("🟡 High chop probability — reduce size or wait for breakout")
-                if stats["momentum_char"] == "Trending" and stats.get("pct_from_entry", 0) > 5:
+                if momentum_char == "Trending" and (stats.get("pct_from_entry") or 0) > 5:
                     signals.append("📈 Trending stock with momentum — trail stop, don't exit early")
-                if stats["momentum_char"] == "Mean-reverting" and stats.get("pct_from_entry", 0) > 10:
+                if momentum_char == "Mean-reverting" and (stats.get("pct_from_entry") or 0) > 10:
                     signals.append("🔄 Mean-reverting stock up big — consider partial profit")
                 if stats["stop_atr"] and stats["stop_atr"] < 1:
                     signals.append("⚠️ Stop < 1×ATR — very tight; one normal day can trigger it")
