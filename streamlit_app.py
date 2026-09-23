@@ -804,75 +804,127 @@ with tab_cockpit:
     all_lots = sorted(D["lots"], key=lambda l: l.get("lot_date") or "9999")
 
     if snapshots:
-        # Build daily portfolio value from daily_snapshots
-        # Group by date -> sum of position_value for each date
+        # ── Portfolio equity curve: Stock + Cash with carry-forward ──
+        # Stock  = sum of open positions' market value (from snapshots)
+        # Cash   = initial capital + cumulative cash events to date
+        # Carry-forward: if a position has no snapshot on a date (yfinance
+        # gap, partial day), use its last known value instead of zero.
         from collections import defaultdict
-        daily_value = defaultdict(float)
-        daily_invested = {}
 
+        # Exit date lookup
+        _exit_map = {}
+        for cl in D.get("closed", []):
+            tid = cl.get("trade_id")
+            exd = cl.get("exit_date")
+            if tid and exd:
+                _exit_map[tid] = exd
+
+        # Cash flow events: entries (negative) and exits (positive)
+        _cash_ev = []
+        _cb_map = {}
+        for pm in D["pos"]:
+            tid = pm.get("trade_id")
+            ep = f(pm.get("entry_price"))
+            qty = f(pm.get("quantity"))
+            ed = pm.get("entry_date")
+            if tid and ep and qty:
+                cb = ep * qty
+                _cb_map[tid] = cb
+                if ed:
+                    _cash_ev.append((ed, -cb))
+        for cl in D.get("closed", []):
+            tid = cl.get("trade_id")
+            exit_date = cl.get("exit_date")
+            exit_price = f(cl.get("exit_price"))
+            if tid in _cb_map and exit_date and exit_price:
+                qty_pm = next((p for p in D["pos"] if p["trade_id"] == tid), None)
+                qty = f(qty_pm.get("quantity")) if qty_pm else None
+                if qty:
+                    _cash_ev.append((exit_date, exit_price * qty))
+        _cash_ev.sort()
+
+        # Initial capital = enough cash so balance never goes negative
+        cum = 0
+        min_cum = 0
+        for _, amt in _cash_ev:
+            cum += amt
+            min_cum = min(min_cum, cum)
+        _init_cap = -min_cum if min_cum < 0 else 0
+
+        # Per-position snapshots (filtered: exclude post-exit)
+        _pos_snap = defaultdict(dict)
         for snap in snapshots:
+            tid = snap.get("trade_id")
             sd = snap.get("snapshot_date")
             pv = f(snap.get("position_value"))
-            if sd and pv is not None:
-                daily_value[sd] += pv
+            if tid and sd and pv is not None:
+                if tid in _exit_map and sd >= _exit_map[tid]:
+                    continue
+                _pos_snap[tid][sd] = pv
 
-        # Build invested curve from lot events
-        lot_events = {}
-        for lot in all_lots:
-            ld = lot.get("lot_date")
-            if not ld:
-                continue
-            lqty = f(lot.get("qty")) or 0
-            lprice = f(lot.get("price")) or 0
-            lot_cost = lqty * lprice
-            if (lot.get("lot_type") or "entry") == "exit":
-                lot_cost = -lot_cost
-            lot_events[ld] = lot_events.get(ld, 0) + lot_cost
+        all_dates = sorted(
+            set().union(*(d.keys() for d in _pos_snap.values()))
+            if _pos_snap else []
+        )
 
-        # Build running invested total for each snapshot date
-        all_dates = sorted(daily_value.keys())
-        running_inv = 0
-        inv_by_date = {}
-        lot_dates_sorted = sorted(lot_events.keys())
-        lot_idx = 0
+        # Sum stock with carry-forward for missing snapshots
+        _last = {}
+        _daily_stock = {}
         for d in all_dates:
-            while lot_idx < len(lot_dates_sorted) and lot_dates_sorted[lot_idx] <= d:
-                running_inv += lot_events[lot_dates_sorted[lot_idx]]
-                lot_idx = lot_idx + 1
-            inv_by_date[d] = running_inv
+            total = 0
+            for tid, dv in _pos_snap.items():
+                if d in dv:
+                    _last[tid] = dv[d]
+                    total += dv[d]
+                elif tid in _last and (tid not in _exit_map or d < _exit_map[tid]):
+                    total += _last[tid]
+            _daily_stock[d] = total
 
-        curve_dates = all_dates
-        curve_values = [daily_value[d] for d in curve_dates]
-        curve_invested = [inv_by_date.get(d, 0) for d in curve_dates]
+        # Build portfolio value = stock + cash for each date
+        curve_dates = list(all_dates)
+        curve_values = []
+        for d in curve_dates:
+            stock = _daily_stock[d]
+            cash = _init_cap + sum(amt for ed, amt in _cash_ev if ed <= d)
+            curve_values.append(stock + cash)
+
+        # Capital base line (constant)
+        curve_capital = [_init_cap] * len(curve_dates)
 
         # Add today's live point
         today_str = datetime.now().strftime("%Y-%m-%d")
-        if today_str not in daily_value:
-            curve_dates = list(curve_dates) + [today_str]
-            curve_values.append(total_value)
-            curve_invested.append(total_invested)
+        active_stock_eq = sum(p["current_value"] for p in positions)
+        today_cash_eq = _init_cap + sum(amt for _, amt in _cash_ev)
+        today_portfolio_eq = active_stock_eq + today_cash_eq
+        if today_str not in set(curve_dates):
+            curve_dates.append(today_str)
+            curve_values.append(today_portfolio_eq)
+            curve_capital.append(_init_cap)
+        else:
+            idx = curve_dates.index(today_str)
+            curve_values[idx] = today_portfolio_eq
 
-        st.caption(f"Daily portfolio market value vs capital deployed ({len(all_dates)} trading days)")
+        st.caption(f"Daily portfolio value vs capital deployed ({len(all_dates)} trading days)")
 
         fig_equity = go.Figure()
         fig_equity.add_trace(go.Scatter(
             x=curve_dates, y=curve_values,
-            mode='lines', name='Market Value',
+            mode='lines', name='Portfolio Value',
             line=dict(color='#2563eb', width=2.5),
             fill='tozeroy', fillcolor='rgba(37,99,235,0.08)',
             hovertemplate='%{x}<br>Value: ₹%{y:,.0f}<extra></extra>',
         ))
         fig_equity.add_trace(go.Scatter(
-            x=curve_dates, y=curve_invested,
-            mode='lines', name='Invested',
+            x=curve_dates, y=curve_capital,
+            mode='lines', name='Capital',
             line=dict(color=MUTED, width=1.5, dash='dot'),
-            hovertemplate='%{x}<br>Invested: ₹%{y:,.0f}<extra></extra>',
+            hovertemplate='%{x}<br>Capital: ₹%{y:,.0f}<extra></extra>',
         ))
         # Today's marker
         fig_equity.add_trace(go.Scatter(
             x=[curve_dates[-1]], y=[curve_values[-1]],
             mode='markers', name=f'Today ({fmt(curve_values[-1])})',
-            marker=dict(size=10, color=GREEN if curve_values[-1] >= curve_invested[-1] else RED, symbol='diamond'),
+            marker=dict(size=10, color=GREEN if curve_values[-1] >= _init_cap else RED, symbol='diamond'),
             hovertemplate='Today<br>Value: ₹%{y:,.0f}<extra></extra>',
         ))
         fig_equity.update_layout(
@@ -1513,21 +1565,40 @@ with tab_perf:
                 if tid and exd:
                     exit_date_map[tid] = exd
 
-            # Sum open positions' market value by date from snapshots
-            # Skip snapshots on or after exit date (position already sold)
-            daily_stock = defaultdict(float)
+            # Per-position snapshots with carry-forward for missing dates.
+            # yfinance may not return data for every position on every date
+            # (partial trading days, data gaps). Carry forward last known
+            # value so a missing snapshot doesn't zero out a position.
+            pos_snap = defaultdict(dict)
             for snap in snapshots:
+                tid = snap.get("trade_id")
                 sd = snap.get("snapshot_date")
                 pv = f(snap.get("position_value"))
-                tid = snap.get("trade_id")
-                if sd and pv is not None:
-                    if tid and tid in exit_date_map and sd >= exit_date_map[tid]:
-                        continue  # position was already sold
-                    daily_stock[sd] += pv
+                if tid and sd and pv is not None:
+                    if tid in exit_date_map and sd >= exit_date_map[tid]:
+                        continue
+                    pos_snap[tid][sd] = pv
+
+            all_snap_dates = sorted(
+                set().union(*(d.keys() for d in pos_snap.values()))
+                if pos_snap else []
+            )
+
+            daily_stock = {}
+            last_val = {}
+            for d in all_snap_dates:
+                total = 0
+                for tid, dv in pos_snap.items():
+                    if d in dv:
+                        last_val[tid] = dv[d]
+                        total += dv[d]
+                    elif tid in last_val and (tid not in exit_date_map or d < exit_date_map[tid]):
+                        total += last_val[tid]
+                daily_stock[d] = total
 
             # Portfolio(D) = stock(D) + cash(D)
             # cash(D) = initial_capital + Σ cash_events on or before D
-            sorted_dates = sorted(daily_stock.keys())
+            sorted_dates = all_snap_dates
             daily_portfolio = []
             for d in sorted_dates:
                 stock = daily_stock[d]
