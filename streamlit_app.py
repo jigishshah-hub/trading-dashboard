@@ -794,6 +794,9 @@ with tab_cockpit:
             lqty = f(lot.get("qty")) or 0
             lprice = f(lot.get("price")) or 0
             lot_cost = lqty * lprice
+            # Exit lots reduce capital deployed, entry lots add
+            if (lot.get("lot_type") or "entry") == "exit":
+                lot_cost = -lot_cost
             lot_events[ld] = lot_events.get(ld, 0) + lot_cost
 
         running = 0
@@ -1017,7 +1020,15 @@ with tab_positions:
                 if tlots:
                     st.markdown("**📦 Lots**")
                     for lot in tlots:
-                        st.text(f"  {lot.get('qty')} shares @ ₹{lot.get('price')} — {lot.get('lot_date') or 'date not set'}")
+                        lt = lot.get('lot_type') or 'entry'
+                        prefix = "🔴 SOLD" if lt == 'exit' else ""
+                        qty_label = lot.get('qty')
+                        price_label = lot.get('price')
+                        date_label = lot.get('lot_date') or 'date not set'
+                        if lt == 'exit':
+                            st.markdown(f"  🔴 **SOLD** {qty_label} shares @ ₹{price_label} — {date_label}")
+                        else:
+                            st.text(f"  {qty_label} shares @ ₹{price_label} — {date_label}")
 
             with dr:
                 tnews = [n for n in D["news"] if n.get("ticker") == sel_ticker][:8]
