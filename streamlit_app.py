@@ -1448,25 +1448,68 @@ with tab_perf:
 
     with ts_right:
         st.markdown("#### 📊 Benchmark & Drawdown")
-        st.caption("Portfolio vs Nifty 50 — requires price history feed")
 
-        # Current portfolio drawdown from peak (estimated from positions)
-        # Peak = sum of max(current_value, cost_basis) per position as rough proxy
-        peak_estimate = sum(max(p["current_value"], p["cost_basis"]) for p in positions)
-        if peak_estimate > 0:
-            dd_from_peak = ((total_value - peak_estimate) / peak_estimate * 100)
-            dd_color = RED if dd_from_peak < -5 else AMBER if dd_from_peak < 0 else GREEN
+        # Use daily_snapshots for real drawdown if available
+        snapshots = D.get("snapshots", [])
+        has_snapshots = len(snapshots) > 0
 
+        if has_snapshots:
+            # Build daily total portfolio value from snapshots
+            from collections import defaultdict
+            daily_totals = defaultdict(float)
+            for snap in snapshots:
+                sd = snap.get("snapshot_date")
+                pv = f(snap.get("position_value"))
+                if sd and pv is not None:
+                    daily_totals[sd] += pv
+
+            sorted_dates = sorted(daily_totals.keys())
+            daily_vals = [daily_totals[d] for d in sorted_dates]
+
+            # Add today's live value
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            if today_str not in daily_totals:
+                sorted_dates = list(sorted_dates) + [today_str]
+                daily_vals.append(total_value)
+
+            # Real peak and drawdown from daily data
+            running_peak = 0
+            peak_val = max(daily_vals) if daily_vals else total_value
+            current_val = daily_vals[-1] if daily_vals else total_value
+            dd_from_peak = ((current_val - peak_val) / peak_val * 100) if peak_val > 0 else 0
+
+            # Max drawdown (worst peak-to-trough)
+            max_dd = 0
+            running_peak = 0
+            for v in daily_vals:
+                if v > running_peak:
+                    running_peak = v
+                dd = ((v - running_peak) / running_peak * 100) if running_peak > 0 else 0
+                if dd < max_dd:
+                    max_dd = dd
+
+            st.caption(f"Tracked from daily snapshots ({len(sorted_dates)} trading days)")
+        else:
+            # Fallback: estimate from positions
+            peak_val = sum(max(p["current_value"], p["cost_basis"]) for p in positions)
+            current_val = total_value
+            dd_from_peak = ((current_val - peak_val) / peak_val * 100) if peak_val > 0 else 0
+            max_dd = dd_from_peak
+            st.caption("Estimated from position cost basis vs current")
+
+        dd_color = RED if dd_from_peak < -5 else AMBER if dd_from_peak < 0 else GREEN
+
+        if peak_val > 0:
             m1, m2 = st.columns(2)
-            m1.metric("Portfolio Value", fmt(total_value))
-            m2.metric("Est. Peak", fmt(peak_estimate))
+            m1.metric("Portfolio Value", fmt(current_val))
+            m2.metric("Peak Value", fmt(peak_val))
 
             st.markdown(
                 f'<div style="text-align:center;padding:16px;margin:8px 0;border-radius:10px;'
                 f'background:{dd_color}10;border:1px solid {dd_color}30">'
                 f'<div style="font-size:11px;text-transform:uppercase;color:{MUTED};letter-spacing:0.04em">Drawdown from Peak</div>'
                 f'<div style="font-size:28px;font-weight:800;color:{dd_color}">{dd_from_peak:+.1f}%</div>'
-                f'<div style="font-size:11px;color:{MUTED}">Estimated from position cost basis vs current</div>'
+                f'<div style="font-size:11px;color:{MUTED}">Max drawdown: {max_dd:+.1f}%</div>'
                 f'</div>', unsafe_allow_html=True)
 
             st.markdown("")
@@ -1485,10 +1528,6 @@ with tab_perf:
                     f'<span style="color:{sl_dd_col};font-weight:700;font-size:14px">{sl_dd:+.1f}%</span>'
                     f'<span style="color:{MUTED};font-size:12px">({fmt(sl_val)} / {fmt(sl_peak)})</span>'
                     f'</div>', unsafe_allow_html=True)
-
-        st.markdown("")
-        st.info("💡 **For full benchmark tracking** (portfolio vs Nifty 50 over time), connect a daily NAV/snapshot job. "
-                "This will enable time-series comparison, rolling alpha, and max drawdown history.")
 
 
 # ═══════════════════════════════════════════════════════════
