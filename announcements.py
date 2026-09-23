@@ -125,10 +125,14 @@ def fetch_nse_announcements(ticker):
             #   subject = actual description (often more informative)
             #   an_dt   = announcement date
             #   attchmntFile = PDF attachment URL
+            #   attchmntText = sometimes contains a brief text summary
+            #   smIndustry   = industry classification
+            #   companyName  = full company name
             desc = (item.get("desc") or "").strip()
             subject = (item.get("subject") or "").strip()
             an_dt = item.get("an_dt", "")
             attachment_url = item.get("attchmntFile", "")
+            attachment_text = (item.get("attchmntText") or "").strip()
             if attachment_url and not attachment_url.startswith("http"):
                 attachment_url = f"https://www.nseindia.com{attachment_url}"
 
@@ -138,10 +142,23 @@ def fetch_nse_announcements(ticker):
             if not headline:
                 continue
 
-            # Build body_snippet from whichever field wasn't used as headline
+            # Build body_snippet — try multiple sources for useful context:
+            # 1. If both desc and subject exist and differ, use the one not chosen as headline
+            # 2. If attchmntText has content, use it
+            # 3. If desc == subject (common for NSE), combine with filing type label
             body_snippet = ""
-            if subject and headline != subject:
-                body_snippet = subject
+            if subject and desc and subject.lower() != desc.lower():
+                # Both exist and differ — use whichever wasn't chosen as headline
+                if headline == subject:
+                    body_snippet = f"Filing type: {desc}"
+                else:
+                    body_snippet = subject
+            elif attachment_text and len(attachment_text) > 10:
+                body_snippet = attachment_text
+            elif desc and subject and desc.lower() == subject.lower():
+                # They're the same — no extra info available, leave empty
+                # (severity_reasoning from classify_severity will serve as context)
+                pass
             elif desc and headline != desc:
                 body_snippet = f"Filing type: {desc}"
 
@@ -216,6 +233,27 @@ def store_news_items(sb, ticker, items):
         )
 
         if existing.data:
+            # Backfill: if existing item is missing severity_reasoning or
+            # body_snippet, update it with current classification/data
+            existing_full = (
+                sb.table("news_raw")
+                .select("id,severity_reasoning,body_snippet")
+                .eq("ticker", ticker)
+                .eq("headline", headline)
+                .limit(1)
+                .execute()
+            )
+            if existing_full.data:
+                row_id = existing_full.data[0]["id"]
+                updates = {}
+                if not existing_full.data[0].get("severity_reasoning"):
+                    _, reasoning = classify_severity(headline, item.get("body_snippet") or "")
+                    if reasoning:
+                        updates["severity_reasoning"] = reasoning
+                if not existing_full.data[0].get("body_snippet") and item.get("body_snippet"):
+                    updates["body_snippet"] = item["body_snippet"][:500]
+                if updates:
+                    sb.table("news_raw").update(updates).eq("id", row_id).execute()
             skipped += 1
             continue
 
