@@ -291,7 +291,12 @@ def compute_stats_model(df, entry, stop, target):
 
     # 1. Momentum character — autocorrelation of returns
     if len(daily_returns) > 20:
-        autocorr_1 = np.corrcoef(daily_returns[:-1], daily_returns[1:])[0, 1]
+        try:
+            autocorr_1 = np.corrcoef(daily_returns[:-1], daily_returns[1:])[0, 1]
+            if np.isnan(autocorr_1):
+                autocorr_1 = 0.0
+        except Exception:
+            autocorr_1 = 0.0
     else:
         autocorr_1 = 0.0
     if autocorr_1 > 0.05:
@@ -654,7 +659,17 @@ for p in active:
     sleeve = p.get("sleeve") or "Unassigned"
 
     targets = conds_for(p["trade_id"], "target")
-    t1 = f(targets[0].get("description")) if targets else None
+    t1 = None
+    if targets:
+        # Try numeric fields first, then extract first number from description
+        t1 = f(targets[0].get("trigger_value")) or f(targets[0].get("price_level"))
+        if t1 is None:
+            import re as _re
+            desc = str(targets[0].get("description") or "")
+            # Extract first number (with optional decimals) from description
+            m = _re.search(r'[\d,]+\.?\d*', desc.replace(",", ""))
+            if m:
+                t1 = f(m.group())
 
     # Thesis status from news
     ticker_news = [n for n in D["news"] if n.get("ticker") == ticker]
@@ -1592,20 +1607,29 @@ with tab_positions:
             if hist_df is not None and len(hist_df) > 30:
                 tech_df = compute_technicals(hist_df)
 
-                # Indicator toggles — row 1
-                tg1, tg2, tg3, tg4, tg5, tg6 = st.columns(6)
-                show_ema = tg1.checkbox("EMAs", value=True, key=f"ema_{sel_ticker}")
-                show_bb = tg2.checkbox("Bollinger", value=True, key=f"bb_{sel_ticker}")
-                show_rsi = tg3.checkbox("RSI", value=True, key=f"rsi_{sel_ticker}")
-                show_macd = tg4.checkbox("MACD", value=False, key=f"macd_{sel_ticker}")
-                show_vol = tg5.checkbox("Volume", value=True, key=f"vol_{sel_ticker}")
-                show_rs = tg6.checkbox("Rel. Strength", value=True, key=f"rs_{sel_ticker}")
+                # Indicator toggles — row 1 (overlays on price chart)
+                ovr1, ovr2 = st.columns(2)
+                show_ema = ovr1.checkbox("EMAs (20/50/200)", value=True, key=f"ema_{sel_ticker}")
+                show_bb = ovr2.checkbox("Bollinger Bands", value=True, key=f"bb_{sel_ticker}")
+
+                # Sub-chart indicators — user picks order via multiselect
+                available_subs = ["RSI", "Rel. Strength", "MACD", "Volume"]
+                active_subs = st.multiselect(
+                    "Sub-chart indicators (drag to reorder)",
+                    available_subs, default=["RSI", "Rel. Strength", "Volume"],
+                    key=f"subs_{sel_ticker}",
+                )
+
+                show_rsi = "RSI" in active_subs
+                show_rs = "Rel. Strength" in active_subs
+                show_macd = "MACD" in active_subs
+                show_vol = "Volume" in active_subs
 
                 # Benchmark selector (visible when RS toggled on)
                 rs_df = None
                 if show_rs:
                     rs_bench = st.selectbox(
-                        "RS vs", list(_RS_BENCHMARKS.keys()),
+                        "RS benchmark", list(_RS_BENCHMARKS.keys()),
                         index=0, key=f"rs_bench_{sel_ticker}",
                     )
                     bench_sym = _RS_BENCHMARKS[rs_bench]
@@ -1613,18 +1637,15 @@ with tab_positions:
                     if bench_data is not None:
                         rs_df = compute_relative_strength(tech_df, bench_data)
 
-                # Determine subplot count and heights
-                n_rows = 1
+                # Build subplot list in user-chosen order
+                sub_configs = []  # list of (name, height)
+                for sub_name in active_subs:
+                    sub_configs.append((sub_name, 0.13))
+
+                n_rows = 1 + len(sub_configs)
                 row_specs = [{"secondary_y": False}]
-                row_heights = [0.45]
-                if show_rs:
-                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.12)
-                if show_rsi:
-                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.12)
-                if show_macd:
-                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.12)
-                if show_vol:
-                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.12)
+                main_h = max(0.35, 0.65 - len(sub_configs) * 0.08)
+                row_heights = [main_h] + [s[1] for s in sub_configs]
 
                 from plotly.subplots import make_subplots
                 fig_tech = make_subplots(
