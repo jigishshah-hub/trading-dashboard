@@ -188,6 +188,197 @@ def fetch_nifty_regime():
 nifty = fetch_nifty_regime()
 
 
+# ── Per-Stock Analysis Engine ────────────────────────────────
+import numpy as np
+
+@st.cache_data(ttl=1800)  # 30-min cache
+def fetch_stock_history(ticker, period="1y"):
+    """Fetch daily OHLCV from yfinance for an Indian stock."""
+    try:
+        t = yf.Ticker(f"{ticker}.NS")
+        hist = t.history(period=period)
+        if hist.empty:
+            return None
+        df = hist[["Open", "High", "Low", "Close", "Volume"]].reset_index()
+        df.columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
+        df["Date"] = df["Date"].dt.tz_localize(None)
+        return df
+    except Exception:
+        return None
+
+
+def compute_technicals(df):
+    """Compute technical indicators on a price DataFrame."""
+    d = df.copy()
+    # EMAs
+    d["EMA20"] = d["Close"].ewm(span=20, adjust=False).mean()
+    d["EMA50"] = d["Close"].ewm(span=50, adjust=False).mean()
+    d["EMA200"] = d["Close"].ewm(span=200, adjust=False).mean()
+    # Bollinger Bands (20, 2)
+    d["BB_Mid"] = d["Close"].rolling(20).mean()
+    bb_std = d["Close"].rolling(20).std()
+    d["BB_Upper"] = d["BB_Mid"] + 2 * bb_std
+    d["BB_Lower"] = d["BB_Mid"] - 2 * bb_std
+    d["BB_Width"] = ((d["BB_Upper"] - d["BB_Lower"]) / d["BB_Mid"] * 100)
+    d["BB_Width_Pctile"] = d["BB_Width"].rolling(100, min_periods=20).apply(
+        lambda x: (x.values[-1] > x.values[:-1]).sum() / len(x.values[:-1]) * 100 if len(x) > 1 else 50,
+        raw=False
+    )
+    # RSI(14)
+    delta = d["Close"].diff()
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    d["RSI"] = 100 - (100 / (1 + rs))
+    d["RSI_MA"] = d["RSI"].rolling(14).mean()
+    # MACD (12, 26, 9)
+    ema12 = d["Close"].ewm(span=12, adjust=False).mean()
+    ema26 = d["Close"].ewm(span=26, adjust=False).mean()
+    d["MACD"] = ema12 - ema26
+    d["MACD_Signal"] = d["MACD"].ewm(span=9, adjust=False).mean()
+    d["MACD_Hist"] = d["MACD"] - d["MACD_Signal"]
+    # ATR(14)
+    tr = pd.concat([
+        d["High"] - d["Low"],
+        (d["High"] - d["Close"].shift()).abs(),
+        (d["Low"] - d["Close"].shift()).abs(),
+    ], axis=1).max(axis=1)
+    d["ATR"] = tr.rolling(14).mean()
+    return d
+
+
+def compute_stats_model(df, entry, stop, target):
+    """Statistical edge model: Monte Carlo, MFE/MAE, momentum, volatility."""
+    closes = df["Close"].values
+    cmp = closes[-1]
+    daily_returns = np.diff(closes) / closes[:-1]
+
+    # 1. Momentum character — autocorrelation of returns
+    if len(daily_returns) > 20:
+        autocorr_1 = np.corrcoef(daily_returns[:-1], daily_returns[1:])[0, 1]
+    else:
+        autocorr_1 = 0.0
+    if autocorr_1 > 0.05:
+        momentum_char = "Trending"
+        momentum_advice = "Let winners run; trail don't cut"
+    elif autocorr_1 < -0.05:
+        momentum_char = "Mean-reverting"
+        momentum_advice = "Take profits faster; moves tend to reverse"
+    else:
+        momentum_char = "Neutral"
+        momentum_advice = "No strong persistence pattern"
+
+    # 2. ATR context
+    atr = df["ATR"].iloc[-1] if "ATR" in df.columns and pd.notna(df["ATR"].iloc[-1]) else None
+    stop_atr = abs(cmp - stop) / atr if atr and atr > 0 and stop > 0 else None
+    target_atr = abs(target - cmp) / atr if atr and atr > 0 and target else None
+
+    # 3. BB Width percentile
+    bb_pctile = df["BB_Width_Pctile"].iloc[-1] if "BB_Width_Pctile" in df.columns else None
+
+    # 4. Monte Carlo — target/stop probability
+    n_sims = 10000
+    n_days = 40  # ~2 months of trading
+    target_hits = 0
+    stop_hits = 0
+    neither = 0
+
+    if len(daily_returns) > 20 and target and stop > 0:
+        for _ in range(n_sims):
+            path = cmp
+            hit_target = False
+            hit_stop = False
+            for d_idx in range(n_days):
+                ret = np.random.choice(daily_returns)
+                path *= (1 + ret)
+                if entry < stop:  # short trade
+                    if path >= stop:
+                        hit_stop = True; break
+                    if path <= target:
+                        hit_target = True; break
+                else:  # long trade
+                    if path <= stop:
+                        hit_stop = True; break
+                    if path >= target:
+                        hit_target = True; break
+            if hit_target:
+                target_hits += 1
+            elif hit_stop:
+                stop_hits += 1
+            else:
+                neither += 1
+        target_prob = target_hits / n_sims * 100
+        stop_prob = stop_hits / n_sims * 100
+        chop_prob = neither / n_sims * 100
+    else:
+        target_prob = stop_prob = chop_prob = None
+
+    # 5. MFE — after moves of similar magnitude, how much further?
+    pct_from_entry = ((cmp - entry) / entry * 100) if entry else 0
+    mfe_further = None
+    mfe_pullback = None
+    if len(closes) > 50 and abs(pct_from_entry) > 1:
+        move_pct = abs(pct_from_entry)
+        further_moves = []
+        pullbacks = []
+        for i in range(20, len(closes) - 20):
+            for window in [5, 10, 15, 20]:
+                if i - window < 0:
+                    continue
+                hist_move = (closes[i] - closes[i - window]) / closes[i - window] * 100
+                if abs(hist_move - pct_from_entry) < move_pct * 0.3:  # similar magnitude
+                    # measure max additional move and max pullback in next 10 days
+                    future = closes[i:i+10]
+                    if len(future) > 1:
+                        if pct_from_entry > 0:  # long
+                            max_fwd = (max(future) - closes[i]) / closes[i] * 100
+                            max_pull = (closes[i] - min(future)) / closes[i] * 100
+                        else:
+                            max_fwd = (closes[i] - min(future)) / closes[i] * 100
+                            max_pull = (max(future) - closes[i]) / closes[i] * 100
+                        further_moves.append(max_fwd)
+                        pullbacks.append(max_pull)
+        if further_moves:
+            mfe_further = np.median(further_moves)
+            mfe_pullback = np.median(pullbacks)
+
+    # 6. Return distribution stats
+    std_daily = np.std(daily_returns) * 100 if len(daily_returns) > 10 else None
+    big_move_pct = (np.sum(np.abs(daily_returns) > 0.03) / len(daily_returns) * 100
+                    if len(daily_returns) > 10 else None)
+
+    # 7. Streak analysis
+    recent = daily_returns[-10:] if len(daily_returns) >= 10 else daily_returns
+    current_streak = 0
+    streak_dir = "green" if recent[-1] > 0 else "red"
+    for r in reversed(recent):
+        if (r > 0 and streak_dir == "green") or (r < 0 and streak_dir == "red"):
+            current_streak += 1
+        else:
+            break
+
+    return {
+        "momentum_char": momentum_char,
+        "momentum_advice": momentum_advice,
+        "autocorr": autocorr_1,
+        "atr": atr,
+        "atr_pct": (atr / cmp * 100) if atr else None,
+        "stop_atr": stop_atr,
+        "target_atr": target_atr,
+        "bb_pctile": bb_pctile,
+        "target_prob": target_prob,
+        "stop_prob": stop_prob,
+        "chop_prob": chop_prob,
+        "mfe_further": mfe_further,
+        "mfe_pullback": mfe_pullback,
+        "std_daily": std_daily,
+        "big_move_pct": big_move_pct,
+        "current_streak": current_streak,
+        "streak_dir": streak_dir,
+        "pct_from_entry": pct_from_entry,
+    }
+
+
 # ── Nifty 50 Breadth — % stocks above 200 DMA ─────────────
 NIFTY50_TICKERS = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
@@ -1356,6 +1547,300 @@ with tab_positions:
                 fc[5].metric("D/E", f"{de:.2f}x" if de else "—")
             else:
                 st.caption("No fundamentals snapshot yet.")
+
+            # ── Technical Chart + Statistical Edge Model ──────────
+            st.divider()
+            st.markdown("**📈 Technical Analysis & Statistical Edge**")
+
+            hist_df = fetch_stock_history(sel_ticker, period="1y")
+            if hist_df is not None and len(hist_df) > 30:
+                tech_df = compute_technicals(hist_df)
+
+                # Indicator toggles
+                tg1, tg2, tg3, tg4, tg5 = st.columns(5)
+                show_ema = tg1.checkbox("EMAs", value=True, key=f"ema_{sel_ticker}")
+                show_bb = tg2.checkbox("Bollinger", value=True, key=f"bb_{sel_ticker}")
+                show_rsi = tg3.checkbox("RSI", value=True, key=f"rsi_{sel_ticker}")
+                show_macd = tg4.checkbox("MACD", value=False, key=f"macd_{sel_ticker}")
+                show_vol = tg5.checkbox("Volume", value=True, key=f"vol_{sel_ticker}")
+
+                # Determine subplot count and heights
+                n_rows = 1
+                row_specs = [{"secondary_y": False}]
+                row_heights = [0.55]
+                if show_rsi:
+                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.15)
+                if show_macd:
+                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.15)
+                if show_vol:
+                    n_rows += 1; row_specs.append({"secondary_y": False}); row_heights.append(0.15)
+
+                from plotly.subplots import make_subplots
+                fig_tech = make_subplots(
+                    rows=n_rows, cols=1, shared_xaxes=True,
+                    vertical_spacing=0.03,
+                    row_heights=row_heights,
+                    specs=[[s] for s in row_specs],
+                )
+
+                # Candlestick
+                fig_tech.add_trace(go.Candlestick(
+                    x=tech_df["Date"], open=tech_df["Open"],
+                    high=tech_df["High"], low=tech_df["Low"],
+                    close=tech_df["Close"], name="Price",
+                    increasing_line_color="#22c55e", decreasing_line_color="#ef4444",
+                ), row=1, col=1)
+
+                # EMAs
+                if show_ema:
+                    for span, clr in [(20, "#f59e0b"), (50, "#3b82f6"), (200, "#a855f7")]:
+                        col_name = f"EMA{span}"
+                        if col_name in tech_df.columns:
+                            valid = tech_df.dropna(subset=[col_name])
+                            fig_tech.add_trace(go.Scatter(
+                                x=valid["Date"], y=valid[col_name],
+                                mode="lines", name=col_name,
+                                line=dict(color=clr, width=1),
+                            ), row=1, col=1)
+
+                # Bollinger Bands
+                if show_bb:
+                    valid_bb = tech_df.dropna(subset=["BB_Upper"])
+                    fig_tech.add_trace(go.Scatter(
+                        x=valid_bb["Date"], y=valid_bb["BB_Upper"],
+                        mode="lines", name="BB Upper",
+                        line=dict(color="#94a3b8", width=0.8, dash="dash"),
+                        showlegend=False,
+                    ), row=1, col=1)
+                    fig_tech.add_trace(go.Scatter(
+                        x=valid_bb["Date"], y=valid_bb["BB_Lower"],
+                        mode="lines", name="BB Lower",
+                        line=dict(color="#94a3b8", width=0.8, dash="dash"),
+                        fill="tonexty", fillcolor="rgba(148,163,184,0.08)",
+                        showlegend=False,
+                    ), row=1, col=1)
+
+                # Entry / Stop / Target horizontal lines
+                if pos["entry"] and pos["entry"] > 0:
+                    fig_tech.add_hline(y=pos["entry"], line_dash="dot", line_color="#3b82f6",
+                                       line_width=1, annotation_text="Entry",
+                                       annotation_position="right", row=1, col=1)
+                if pos["stop"] and pos["stop"] > 0:
+                    fig_tech.add_hline(y=pos["stop"], line_dash="dot", line_color="#ef4444",
+                                       line_width=1, annotation_text="Stop",
+                                       annotation_position="right", row=1, col=1)
+                if pos.get("target") and pos["target"] > 0:
+                    fig_tech.add_hline(y=pos["target"], line_dash="dot", line_color="#22c55e",
+                                       line_width=1, annotation_text="Target",
+                                       annotation_position="right", row=1, col=1)
+
+                # RSI subplot
+                cur_row = 2
+                if show_rsi:
+                    valid_rsi = tech_df.dropna(subset=["RSI"])
+                    fig_tech.add_trace(go.Scatter(
+                        x=valid_rsi["Date"], y=valid_rsi["RSI"],
+                        mode="lines", name="RSI(14)",
+                        line=dict(color="#8b5cf6", width=1.2),
+                    ), row=cur_row, col=1)
+                    valid_rsi_ma = tech_df.dropna(subset=["RSI_MA"])
+                    fig_tech.add_trace(go.Scatter(
+                        x=valid_rsi_ma["Date"], y=valid_rsi_ma["RSI_MA"],
+                        mode="lines", name="RSI MA",
+                        line=dict(color="#f59e0b", width=0.8, dash="dash"),
+                    ), row=cur_row, col=1)
+                    fig_tech.add_hline(y=70, line_dash="dash", line_color="#ef4444",
+                                       line_width=0.5, row=cur_row, col=1)
+                    fig_tech.add_hline(y=30, line_dash="dash", line_color="#22c55e",
+                                       line_width=0.5, row=cur_row, col=1)
+                    fig_tech.update_yaxes(title_text="RSI", range=[10, 90], row=cur_row, col=1)
+                    cur_row += 1
+
+                # MACD subplot
+                if show_macd:
+                    valid_macd = tech_df.dropna(subset=["MACD"])
+                    fig_tech.add_trace(go.Scatter(
+                        x=valid_macd["Date"], y=valid_macd["MACD"],
+                        mode="lines", name="MACD",
+                        line=dict(color="#3b82f6", width=1),
+                    ), row=cur_row, col=1)
+                    fig_tech.add_trace(go.Scatter(
+                        x=valid_macd["Date"], y=valid_macd["MACD_Signal"],
+                        mode="lines", name="Signal",
+                        line=dict(color="#f59e0b", width=1, dash="dash"),
+                    ), row=cur_row, col=1)
+                    colors_macd = ["#22c55e" if v >= 0 else "#ef4444" for v in valid_macd["MACD_Hist"]]
+                    fig_tech.add_trace(go.Bar(
+                        x=valid_macd["Date"], y=valid_macd["MACD_Hist"],
+                        name="Histogram", marker_color=colors_macd,
+                        showlegend=False,
+                    ), row=cur_row, col=1)
+                    fig_tech.update_yaxes(title_text="MACD", row=cur_row, col=1)
+                    cur_row += 1
+
+                # Volume subplot
+                if show_vol:
+                    vol_colors = ["#22c55e" if tech_df["Close"].iloc[i] >= tech_df["Open"].iloc[i]
+                                  else "#ef4444" for i in range(len(tech_df))]
+                    fig_tech.add_trace(go.Bar(
+                        x=tech_df["Date"], y=tech_df["Volume"],
+                        name="Volume", marker_color=vol_colors,
+                        opacity=0.5, showlegend=False,
+                    ), row=cur_row, col=1)
+                    fig_tech.update_yaxes(title_text="Vol", row=cur_row, col=1)
+
+                chart_height = 250 + n_rows * 100
+                fig_tech.update_layout(
+                    height=chart_height,
+                    margin=dict(l=0, r=0, t=10, b=10),
+                    legend=dict(orientation="h", yanchor="top", y=1.02, xanchor="left", x=0,
+                                font=dict(size=10)),
+                    xaxis=dict(
+                        rangeslider=dict(visible=False),
+                        rangeselector=dict(
+                            buttons=[
+                                dict(count=1, label="1M", step="month", stepmode="backward"),
+                                dict(count=3, label="3M", step="month", stepmode="backward"),
+                                dict(count=6, label="6M", step="month", stepmode="backward"),
+                                dict(step="all", label="1Y"),
+                            ],
+                            bgcolor="#f3f4f6", activecolor="#355ec9",
+                        ),
+                    ),
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                fig_tech.update_xaxes(showgrid=False)
+                fig_tech.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.05)")
+                st.plotly_chart(fig_tech, use_container_width=True, config={"displayModeBar": False})
+
+                # ── Statistical Edge Scorecard ────────────────
+                stats = compute_stats_model(
+                    tech_df,
+                    entry=pos.get("entry", 0),
+                    stop=pos.get("stop", 0),
+                    target=pos.get("target", 0),
+                )
+
+                st.markdown("**🎯 Statistical Edge Scorecard**")
+                sc1, sc2, sc3, sc4 = st.columns(4)
+
+                # Monte Carlo probabilities
+                if stats["target_prob"] is not None:
+                    sc1.markdown(
+                        f'<div style="padding:8px;background:rgba(34,197,94,.06);'
+                        f'border-radius:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Target Hit Prob</div>'
+                        f'<div style="font-size:20px;font-weight:700;color:#22c55e">'
+                        f'{stats["target_prob"]:.0f}%</div>'
+                        f'<div style="font-size:9px;color:#999">10K Monte Carlo sims</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                    sc2.markdown(
+                        f'<div style="padding:8px;background:rgba(239,68,68,.06);'
+                        f'border-radius:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Stop Hit Prob</div>'
+                        f'<div style="font-size:20px;font-weight:700;color:#ef4444">'
+                        f'{stats["stop_prob"]:.0f}%</div>'
+                        f'<div style="font-size:9px;color:#999">{stats["chop_prob"]:.0f}% chop / undecided</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                else:
+                    sc1.caption("Monte Carlo: need target & stop")
+                    sc2.caption("—")
+
+                # Momentum character
+                ac = stats["autocorr"]
+                mc_color = "#3b82f6" if stats["momentum_char"] == "Trending" else (
+                    "#f59e0b" if stats["momentum_char"] == "Mean-reverting" else "#94a3b8")
+                sc3.markdown(
+                    f'<div style="padding:8px;background:rgba(59,130,246,.06);'
+                    f'border-radius:6px;text-align:center">'
+                    f'<div style="font-size:10px;color:#666">Momentum</div>'
+                    f'<div style="font-size:16px;font-weight:700;color:{mc_color}">'
+                    f'{stats["momentum_char"]}</div>'
+                    f'<div style="font-size:9px;color:#999">ρ = {ac:.3f} · {stats["momentum_advice"]}</div>'
+                    f'</div>', unsafe_allow_html=True
+                )
+
+                # Volatility context
+                atr_txt = f'ATR ₹{stats["atr"]:.1f} ({stats["atr_pct"]:.1f}%)' if stats["atr"] else "—"
+                stop_atr_txt = f'{stats["stop_atr"]:.1f}×ATR' if stats["stop_atr"] else "—"
+                bb_txt = f'BB Width {stats["bb_pctile"]:.0f}th pctile' if stats["bb_pctile"] and pd.notna(stats["bb_pctile"]) else "—"
+                sc4.markdown(
+                    f'<div style="padding:8px;background:rgba(168,85,247,.06);'
+                    f'border-radius:6px;text-align:center">'
+                    f'<div style="font-size:10px;color:#666">Volatility</div>'
+                    f'<div style="font-size:13px;font-weight:600">{atr_txt}</div>'
+                    f'<div style="font-size:9px;color:#999">Stop: {stop_atr_txt} · {bb_txt}</div>'
+                    f'</div>', unsafe_allow_html=True
+                )
+
+                # MFE row
+                if stats["mfe_further"] is not None:
+                    mf1, mf2, mf3, mf4 = st.columns(4)
+                    mf1.markdown(
+                        f'<div style="padding:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Median Further Upside (MFE)</div>'
+                        f'<div style="font-size:16px;font-weight:600;color:#22c55e">'
+                        f'+{stats["mfe_further"]:.1f}%</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                    mf2.markdown(
+                        f'<div style="padding:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Median Pullback (MAE)</div>'
+                        f'<div style="font-size:16px;font-weight:600;color:#ef4444">'
+                        f'-{stats["mfe_pullback"]:.1f}%</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                    streak_icon = "🟢" if stats["streak_dir"] == "green" else "🔴"
+                    mf3.markdown(
+                        f'<div style="padding:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Current Streak</div>'
+                        f'<div style="font-size:16px;font-weight:600">'
+                        f'{streak_icon} {stats["current_streak"]} day(s)</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                    big_move = stats.get("big_move_pct")
+                    mf4.markdown(
+                        f'<div style="padding:6px;text-align:center">'
+                        f'<div style="font-size:10px;color:#666">Daily σ / Big Move %</div>'
+                        f'<div style="font-size:16px;font-weight:600">'
+                        f'{stats["std_daily"]:.2f}% / {big_move:.0f}%</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+
+                # Action signal
+                signals = []
+                if stats["target_prob"] is not None:
+                    if stats["target_prob"] > 60:
+                        signals.append("🟢 High target probability — hold / add on dips")
+                    elif stats["stop_prob"] > 55:
+                        signals.append("🔴 High stop probability — consider reducing or tightening stop")
+                    elif stats["chop_prob"] > 50:
+                        signals.append("🟡 High chop probability — reduce size or wait for breakout")
+                if stats["momentum_char"] == "Trending" and stats.get("pct_from_entry", 0) > 5:
+                    signals.append("📈 Trending stock with momentum — trail stop, don't exit early")
+                if stats["momentum_char"] == "Mean-reverting" and stats.get("pct_from_entry", 0) > 10:
+                    signals.append("🔄 Mean-reverting stock up big — consider partial profit")
+                if stats["stop_atr"] and stats["stop_atr"] < 1:
+                    signals.append("⚠️ Stop < 1×ATR — very tight; one normal day can trigger it")
+                if stats["bb_pctile"] and pd.notna(stats["bb_pctile"]) and stats["bb_pctile"] > 85:
+                    signals.append("💥 Volatility expansion (BB width >85th pctile) — breakout or breakdown likely")
+
+                if signals:
+                    signal_html = "".join(
+                        f'<div style="padding:4px 8px;margin:2px 0;background:rgba(0,0,0,.02);'
+                        f'border-radius:3px;font-size:12px">{s}</div>' for s in signals
+                    )
+                    st.markdown(
+                        f'<div style="margin-top:6px;padding:8px;border:1px solid #e5e7eb;border-radius:6px">'
+                        f'<div style="font-size:11px;font-weight:600;color:#666;margin-bottom:4px">'
+                        f'ACTION SIGNALS</div>{signal_html}</div>',
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.caption("Could not load price history from Yahoo Finance.")
 
 
 # ═══════════════════════════════════════════════════════════
