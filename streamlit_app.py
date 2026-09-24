@@ -233,7 +233,7 @@ def fetch_benchmark_history(symbol, period="2y"):
         return None
 
 
-def compute_relative_strength(stock_df, bench_df):
+def compute_relative_strength(stock_df, bench_df, ma_period=20):
     """Compute RS ratio = stock / benchmark, normalised to start at 100."""
     merged = pd.merge(stock_df[["Date", "Close"]], bench_df, on="Date",
                        suffixes=("_stock", "_bench"), how="inner")
@@ -241,7 +241,7 @@ def compute_relative_strength(stock_df, bench_df):
         return None
     merged["RS_Raw"] = merged["Close_stock"] / merged["Close_bench"]
     merged["RS"] = merged["RS_Raw"] / merged["RS_Raw"].iloc[0] * 100
-    merged["RS_MA"] = merged["RS"].rolling(20).mean()
+    merged["RS_MA"] = merged["RS"].rolling(ma_period).mean()
     return merged[["Date", "RS", "RS_MA"]]
 
 
@@ -1737,6 +1737,18 @@ with tab_positions:
             if hist_df is not None and len(hist_df) > 30:
                 tech_df = compute_technicals(hist_df)
 
+                # ── Chart period selector ──
+                _period_options = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252, "All": 0}
+                _period_sel = st.radio(
+                    "Chart period", list(_period_options.keys()),
+                    index=2, horizontal=True, key=f"period_{sel_ticker}",
+                )
+                _period_days = _period_options[_period_sel]
+                if _period_days > 0 and len(tech_df) > _period_days:
+                    chart_df = tech_df.iloc[-_period_days:].reset_index(drop=True)
+                else:
+                    chart_df = tech_df
+
                 # Indicator toggles — row 1 (overlays on price chart)
                 ovr1, ovr2 = st.columns(2)
                 show_ema = ovr1.checkbox("EMAs (20/50/200)", value=True, key=f"ema_{sel_ticker}")
@@ -1755,17 +1767,29 @@ with tab_positions:
                 show_macd = "MACD" in active_subs
                 show_vol = "Volume" in active_subs
 
-                # Benchmark selector (visible when RS toggled on)
+                # Benchmark selector + RS MA period (visible when RS toggled on)
                 rs_df = None
+                _rs_ma_period = 20
                 if show_rs:
-                    rs_bench = st.selectbox(
+                    _rs_col1, _rs_col2 = st.columns(2)
+                    rs_bench = _rs_col1.selectbox(
                         "RS benchmark", list(_RS_BENCHMARKS.keys()),
                         index=0, key=f"rs_bench_{sel_ticker}",
+                    )
+                    _rs_ma_period = _rs_col2.selectbox(
+                        "RS MA period", [10, 20, 50],
+                        index=1, key=f"rs_ma_{sel_ticker}",
                     )
                     bench_sym = _RS_BENCHMARKS[rs_bench]
                     bench_data = fetch_benchmark_history(bench_sym)
                     if bench_data is not None:
-                        rs_df = compute_relative_strength(tech_df, bench_data)
+                        rs_df = compute_relative_strength(tech_df, bench_data, ma_period=_rs_ma_period)
+                        # Filter RS to chart period too
+                        if _period_days > 0 and len(rs_df) > _period_days:
+                            rs_df = rs_df.iloc[-_period_days:].reset_index(drop=True)
+                            # Re-normalize RS to start of visible period
+                            if len(rs_df) > 0:
+                                rs_df["RS"] = rs_df["RS"] / rs_df["RS"].iloc[0] * 100
 
                 # Build subplot list in user-chosen order
                 sub_configs = []  # list of (name, height)
@@ -1787,14 +1811,14 @@ with tab_positions:
 
                 # Candlestick — with OHLCV hover
                 fig_tech.add_trace(go.Candlestick(
-                    x=tech_df["Date"], open=tech_df["Open"],
-                    high=tech_df["High"], low=tech_df["Low"],
-                    close=tech_df["Close"], name="Price",
+                    x=chart_df["Date"], open=chart_df["Open"],
+                    high=chart_df["High"], low=chart_df["Low"],
+                    close=chart_df["Close"], name="Price",
                     increasing_line_color="#22c55e", decreasing_line_color="#ef4444",
                     text=[f"O: ₹{o:,.1f}<br>H: ₹{h:,.1f}<br>L: ₹{l:,.1f}<br>C: ₹{c:,.1f}<br>Vol: {v:,.0f}"
-                          for o, h, l, c, v in zip(tech_df["Open"], tech_df["High"],
-                                                    tech_df["Low"], tech_df["Close"],
-                                                    tech_df["Volume"])],
+                          for o, h, l, c, v in zip(chart_df["Open"], chart_df["High"],
+                                                    chart_df["Low"], chart_df["Close"],
+                                                    chart_df["Volume"])],
                     hoverinfo="text+x",
                 ), row=1, col=1)
 
@@ -1802,8 +1826,8 @@ with tab_positions:
                 if show_ema:
                     for span, clr in [(20, "#f59e0b"), (50, "#3b82f6"), (200, "#a855f7")]:
                         col_name = f"EMA{span}"
-                        if col_name in tech_df.columns:
-                            valid = tech_df.dropna(subset=[col_name])
+                        if col_name in chart_df.columns:
+                            valid = chart_df.dropna(subset=[col_name])
                             fig_tech.add_trace(go.Scatter(
                                 x=valid["Date"], y=valid[col_name],
                                 mode="lines", name=col_name,
@@ -1813,7 +1837,7 @@ with tab_positions:
 
                 # Bollinger Bands
                 if show_bb:
-                    valid_bb = tech_df.dropna(subset=["BB_Upper"])
+                    valid_bb = chart_df.dropna(subset=["BB_Upper"])
                     fig_tech.add_trace(go.Scatter(
                         x=valid_bb["Date"], y=valid_bb["BB_Upper"],
                         mode="lines", name="BB Upper",
@@ -1857,9 +1881,9 @@ with tab_positions:
                             ), row=cur_row, col=1)
                             fig_tech.add_trace(go.Scatter(
                                 x=rs_df["Date"], y=rs_df["RS_MA"],
-                                mode="lines", name="RS MA(20)",
+                                mode="lines", name=f"RS MA({_rs_ma_period})",
                                 line=dict(color="#0ea5e9", width=0.8, dash="dash"),
-                                hovertemplate="RS MA(20): %{y:.1f}<extra></extra>",
+                                hovertemplate=f"RS MA({_rs_ma_period}): %{{y:.1f}}<extra></extra>",
                                 showlegend=False,
                             ), row=cur_row, col=1)
                             fig_tech.add_hline(y=100, line_dash="dot", line_color="#94a3b8",
@@ -1867,14 +1891,14 @@ with tab_positions:
                         fig_tech.update_yaxes(title_text="RS", row=cur_row, col=1)
 
                     elif sub_name == "RSI":
-                        valid_rsi = tech_df.dropna(subset=["RSI"])
+                        valid_rsi = chart_df.dropna(subset=["RSI"])
                         fig_tech.add_trace(go.Scatter(
                             x=valid_rsi["Date"], y=valid_rsi["RSI"],
                             mode="lines", name="RSI(14)",
                             line=dict(color="#8b5cf6", width=1.2),
                             hovertemplate="RSI: %{y:.1f}<extra></extra>",
                         ), row=cur_row, col=1)
-                        valid_rsi_ma = tech_df.dropna(subset=["RSI_MA"])
+                        valid_rsi_ma = chart_df.dropna(subset=["RSI_MA"])
                         fig_tech.add_trace(go.Scatter(
                             x=valid_rsi_ma["Date"], y=valid_rsi_ma["RSI_MA"],
                             mode="lines", name="RSI MA",
@@ -1888,33 +1912,37 @@ with tab_positions:
                         fig_tech.update_yaxes(title_text="RSI", range=[10, 90], row=cur_row, col=1)
 
                     elif sub_name == "MACD":
-                        valid_macd = tech_df.dropna(subset=["MACD"])
+                        valid_macd = chart_df.dropna(subset=["MACD"])
                         fig_tech.add_trace(go.Scatter(
                             x=valid_macd["Date"], y=valid_macd["MACD"],
                             mode="lines", name="MACD",
                             line=dict(color="#3b82f6", width=1),
+                            hovertemplate="MACD: %{y:.2f}<extra></extra>",
                         ), row=cur_row, col=1)
                         fig_tech.add_trace(go.Scatter(
                             x=valid_macd["Date"], y=valid_macd["MACD_Signal"],
                             mode="lines", name="Signal",
                             line=dict(color="#f59e0b", width=1, dash="dash"),
+                            hovertemplate="Signal: %{y:.2f}<extra></extra>",
                         ), row=cur_row, col=1)
                         colors_macd = ["#22c55e" if v >= 0 else "#ef4444"
                                        for v in valid_macd["MACD_Hist"]]
                         fig_tech.add_trace(go.Bar(
                             x=valid_macd["Date"], y=valid_macd["MACD_Hist"],
                             name="Histogram", marker_color=colors_macd,
+                            hovertemplate="Hist: %{y:.2f}<extra></extra>",
                             showlegend=False,
                         ), row=cur_row, col=1)
                         fig_tech.update_yaxes(title_text="MACD", row=cur_row, col=1)
 
                     elif sub_name == "Volume":
-                        vol_colors = ["#22c55e" if tech_df["Close"].iloc[i] >= tech_df["Open"].iloc[i]
-                                      else "#ef4444" for i in range(len(tech_df))]
+                        vol_colors = ["#22c55e" if chart_df["Close"].iloc[i] >= chart_df["Open"].iloc[i]
+                                      else "#ef4444" for i in range(len(chart_df))]
                         fig_tech.add_trace(go.Bar(
-                            x=tech_df["Date"], y=tech_df["Volume"],
+                            x=chart_df["Date"], y=chart_df["Volume"],
                             name="Volume", marker_color=vol_colors,
                             opacity=0.5, showlegend=False,
+                            hovertemplate="Vol: %{y:,.0f}<extra></extra>",
                         ), row=cur_row, col=1)
                         fig_tech.update_yaxes(title_text="Vol", row=cur_row, col=1)
 
@@ -1931,18 +1959,10 @@ with tab_positions:
                                    xanchor="left", x=0, font=dict(size=10)),
                     "plot_bgcolor": "rgba(0,0,0,0)",
                     "paper_bgcolor": "rgba(0,0,0,0)",
+                    "hovermode": "x unified",
+                    "hoverlabel": dict(bgcolor="white", font_size=11, font_family="sans-serif"),
                     "dragmode": "zoom",
                     "xaxis": dict(
-                        rangeselector=dict(
-                            buttons=[
-                                dict(count=1, label="1M", step="month", stepmode="backward"),
-                                dict(count=3, label="3M", step="month", stepmode="backward"),
-                                dict(count=6, label="6M", step="month", stepmode="backward"),
-                                dict(count=1, label="1Y", step="year", stepmode="backward"),
-                                dict(step="all", label="All"),
-                            ],
-                            bgcolor="#f3f4f6", activecolor="#355ec9",
-                        ),
                         rangeslider=dict(visible=False),
                     ),
                 }
@@ -1955,8 +1975,12 @@ with tab_positions:
                     layout_update["xaxis"]["rangeslider"] = dict(visible=True, thickness=0.05)
 
                 fig_tech.update_layout(**layout_update)
-                fig_tech.update_xaxes(showgrid=False)
-                fig_tech.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.05)")
+                fig_tech.update_xaxes(showgrid=False,
+                    showspikes=True, spikemode="across", spikesnap="cursor",
+                    spikethickness=0.5, spikecolor="#94a3b8", spikedash="dot")
+                fig_tech.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.05)",
+                    showspikes=True, spikethickness=0.5, spikecolor="#94a3b8",
+                    spikedash="dot", spikemode="across")
                 st.plotly_chart(fig_tech, use_container_width=True, config={
                     "displayModeBar": True,
                     "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
