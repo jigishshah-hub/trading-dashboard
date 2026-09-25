@@ -25,6 +25,21 @@ SUPABASE_URL = "https://egfsjboyzajyemjqazot.supabase.co"
 
 # ── Materiality classification ────────────────────────────────
 # Each entry: (keyword, severity, reasoning)
+
+# ROUTINE_RULES are checked FIRST — they short-circuit thesis-threatening rules.
+# This prevents NSE boilerplate phrases like "Prohibition of Insider Trading
+# Regulations" (present in every Trading Window closure filing) from triggering
+# the "insider trading" thesis-threatening rule.
+ROUTINE_RULES = [
+    ("trading window", "routine update", "Pre-results trading window closure — standard SEBI compliance (boilerplate)"),
+    ("closure of trading window", "routine update", "Trading window closure — routine compliance filing"),
+    ("opening of trading window", "routine update", "Trading window opening — routine compliance filing"),
+    ("book closure", "routine update", "Book closure — routine shareholder record date notice"),
+    ("newspaper publication", "routine update", "Regulatory newspaper publication — standard compliance"),
+    ("change in address", "routine update", "Address change — administrative notice"),
+    ("change in registered office", "routine update", "Registered office change — administrative notice"),
+]
+
 THESIS_THREATENING_RULES = [
     ("fraud", "thesis-threatening", "Fraud allegation — potential thesis invalidation"),
     ("default", "thesis-threatening", "Debt default — solvency risk"),
@@ -88,6 +103,13 @@ def classify_severity(headline, body=""):
     Returns (severity_tag, severity_reasoning).
     """
     combined = f"{headline} {body}".lower()
+
+    # Check routine rules first — prevents boilerplate NSE text (e.g.
+    # "Prohibition of Insider Trading Regulations" in Trading Window filings)
+    # from triggering thesis-threatening keyword matches.
+    for keyword, severity, reasoning in ROUTINE_RULES:
+        if keyword.lower() in combined:
+            return severity, reasoning
 
     for keyword, severity, reasoning in THESIS_THREATENING_RULES:
         if keyword.lower() in combined:
