@@ -188,6 +188,111 @@ def fetch_nifty_regime():
 nifty = fetch_nifty_regime()
 
 
+# ── Fear Gauges: MOVE Index + India VIX + Junk Bond Spread ──
+@st.cache_data(ttl=900)  # 15-min cache
+def fetch_fear_gauges():
+    """Fetch MOVE Index, India VIX, and compute confirmation signals."""
+    gauges = {}
+
+    # 1. MOVE Index (^MOVE) — US Treasury implied volatility
+    try:
+        move_tk = yf.Ticker("^MOVE")
+        move_hist = move_tk.history(period="6mo")
+        if not move_hist.empty:
+            move_close = float(move_hist["Close"].iloc[-1])
+            move_prev = float(move_hist["Close"].iloc[-2]) if len(move_hist) > 1 else move_close
+            move_chg = ((move_close - move_prev) / move_prev) * 100
+            # 30-day rolling average
+            move_30d = float(move_hist["Close"].tail(22).mean())
+            # Sparkline data (last 60 trading days)
+            move_spark = move_hist["Close"].tail(60).tolist()
+            gauges["move"] = {
+                "value": round(move_close, 1),
+                "prev": round(move_prev, 1),
+                "chg": round(move_chg, 2),
+                "avg_30d": round(move_30d, 1),
+                "spark": [round(v, 1) for v in move_spark],
+                "status": "extreme" if move_close >= 100 else "elevated" if move_close >= 80 else "moderate" if move_close >= 70 else "calm",
+            }
+    except Exception:
+        pass
+
+    # 2. India VIX (^INDIAVIX) — local fear gauge
+    try:
+        vix_tk = yf.Ticker("^INDIAVIX")
+        vix_hist = vix_tk.history(period="6mo")
+        if not vix_hist.empty:
+            vix_close = float(vix_hist["Close"].iloc[-1])
+            vix_prev = float(vix_hist["Close"].iloc[-2]) if len(vix_hist) > 1 else vix_close
+            vix_chg = ((vix_close - vix_prev) / vix_prev) * 100
+            vix_30d = float(vix_hist["Close"].tail(22).mean())
+            vix_spark = vix_hist["Close"].tail(60).tolist()
+            gauges["india_vix"] = {
+                "value": round(vix_close, 2),
+                "prev": round(vix_prev, 2),
+                "chg": round(vix_chg, 2),
+                "avg_30d": round(vix_30d, 2),
+                "spark": [round(v, 2) for v in vix_spark],
+                "status": "extreme" if vix_close >= 25 else "elevated" if vix_close >= 20 else "watch" if vix_close >= 15 else "calm",
+            }
+    except Exception:
+        pass
+
+    # 3. Junk Bond Spread proxy: HYG/LQD ratio as credit stress indicator
+    # (FRED BAMLH0A0HYM2 not available via yfinance — use ETF ratio as proxy)
+    try:
+        hyg = yf.Ticker("HYG")
+        lqd = yf.Ticker("LQD")
+        hyg_h = hyg.history(period="6mo")
+        lqd_h = lqd.history(period="6mo")
+        if not hyg_h.empty and not lqd_h.empty:
+            # HYG/LQD ratio: falling = credit stress (junk underperforming IG)
+            # We invert to make higher = more stress (like spread)
+            ratio = lqd_h["Close"] / hyg_h["Close"]
+            ratio = ratio.dropna()
+            if len(ratio) > 1:
+                ratio_val = float(ratio.iloc[-1])
+                ratio_prev = float(ratio.iloc[-2])
+                ratio_chg = ((ratio_val - ratio_prev) / ratio_prev) * 100
+                ratio_30d = float(ratio.tail(22).mean())
+                # Percentile rank within 6mo for relative stress reading
+                ratio_pctile = float((ratio <= ratio_val).sum() / len(ratio) * 100)
+                ratio_spark = ratio.tail(60).tolist()
+                gauges["credit_stress"] = {
+                    "value": round(ratio_val, 3),
+                    "prev": round(ratio_prev, 3),
+                    "chg": round(ratio_chg, 2),
+                    "avg_30d": round(ratio_30d, 3),
+                    "pctile": round(ratio_pctile, 0),
+                    "spark": [round(v, 3) for v in ratio_spark],
+                    "status": "elevated" if ratio_pctile >= 80 else "watch" if ratio_pctile >= 60 else "calm",
+                }
+    except Exception:
+        pass
+
+    # Compute confirmation count
+    signals_on = 0
+    if gauges.get("move", {}).get("status") in ("elevated", "extreme"):
+        signals_on += 1
+    if gauges.get("india_vix", {}).get("status") in ("elevated", "extreme"):
+        signals_on += 1
+    if gauges.get("credit_stress", {}).get("status") == "elevated":
+        signals_on += 1
+
+    gauges["signals_on"] = signals_on
+    gauges["confirmation"] = (
+        "TRIPLE" if signals_on == 3 else
+        "DOUBLE" if signals_on == 2 else
+        "SINGLE" if signals_on == 1 else
+        "NONE"
+    )
+
+    return gauges
+
+
+fear_gauges = fetch_fear_gauges()
+
+
 # ── Per-Stock Analysis Engine ────────────────────────────────
 import numpy as np
 
@@ -1117,12 +1222,23 @@ with tab_cockpit:
                 sys_state, sys_icon, sys_color, sys_bg = "NORMAL", "🟢", "#216c30", "#eaf7ed"
                 deploy_perm = "HOLD / WAIT FOR RULE TRIGGER"
 
+            # Fear gauge confirmation overlay
+            fg_signals = fear_gauges.get("signals_on", 0) if fear_gauges else 0
+            fg_conf_label = ""
+            if sys_state.startswith("DEPLOY") and fg_signals > 0:
+                if fg_signals == 3:
+                    fg_conf_label = " · 🔴 TRIPLE CONFIRMED — max conviction"
+                elif fg_signals == 2:
+                    fg_conf_label = " · 🟠 DOUBLE CONFIRMED — enhanced sizing"
+                elif fg_signals == 1:
+                    fg_conf_label = " · 🟡 1 fear gauge elevated"
+
             # State badge
             st.markdown(
                 f'<div style="background:{sys_bg};border:1px solid {sys_color}30;border-radius:10px;padding:14px 16px;margin-bottom:10px">'
                 f'<div style="font-size:11px;color:{MUTED};text-transform:uppercase;letter-spacing:0.04em">Current portfolio state</div>'
                 f'<div style="font-size:22px;font-weight:800;color:{sys_color};margin:4px 0">{sys_icon} {sys_state}</div>'
-                f'<div style="font-size:12px;color:#444">Deployment permission: <strong>{deploy_perm}</strong></div>'
+                f'<div style="font-size:12px;color:#444">Deployment permission: <strong>{deploy_perm}</strong>{fg_conf_label}</div>'
                 f'</div>', unsafe_allow_html=True)
 
             # Nifty metrics row — 5 cols (EMA + both breadth sources)
@@ -1226,6 +1342,86 @@ with tab_cockpit:
                     f'<span style="font-size:13px;font-weight:700;min-width:35px">{ca["pct"]}%</span>'
                     f'<span style="font-size:11px;color:{MUTED}">{ca["desc"]}</span>'
                     f'</div>', unsafe_allow_html=True)
+
+            # ── Fear Gauges Panel ──
+            st.markdown("")
+            st.markdown("**Fear Gauges** <span style='font-size:11px;color:#888'>(triple confirmation for contrarian deployment)</span>",
+                        unsafe_allow_html=True)
+
+            if fear_gauges:
+                fg_signals = fear_gauges.get("signals_on", 0)
+                fg_conf = fear_gauges.get("confirmation", "NONE")
+
+                # Confirmation badge
+                conf_colors = {
+                    "TRIPLE": ("#a92e2e", "#feecec", "🔴🔴🔴 Maximum conviction — deploy aggressively"),
+                    "DOUBLE": ("#c05621", "#fff0e6", "🟠🟠 Elevated — enhanced tactical sizing"),
+                    "SINGLE": ("#a76a00", "#fff6dd", "🟡 One gauge elevated — standard ladder"),
+                    "NONE":   ("#216c30", "#eaf7ed", "🟢 All calm — standard ladder rules"),
+                }
+                cc, cbg, clabel = conf_colors.get(fg_conf, conf_colors["NONE"])
+                st.markdown(
+                    f'<div style="background:{cbg};border:1px solid {cc}30;border-radius:8px;padding:8px 12px;margin:6px 0">'
+                    f'<div style="font-size:11px;color:{MUTED};text-transform:uppercase;letter-spacing:0.04em">Confirmation signals: {fg_signals}/3</div>'
+                    f'<div style="font-size:12px;color:{cc};font-weight:600;margin-top:2px">{clabel}</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+                # Individual gauge rows
+                gauge_defs = [
+                    ("MOVE Index", "move", "US Treasury vol", {
+                        "extreme": ("🔴", "#a92e2e", "≥100"), "elevated": ("🟠", "#c05621", "≥80"),
+                        "moderate": ("🟡", "#a76a00", "70-80"), "calm": ("🟢", "#216c30", "<70")
+                    }),
+                    ("India VIX", "india_vix", "Nifty options vol", {
+                        "extreme": ("🔴", "#a92e2e", "≥25"), "elevated": ("🟠", "#c05621", "≥20"),
+                        "watch": ("🟡", "#a76a00", "15-20"), "calm": ("🟢", "#216c30", "<15")
+                    }),
+                    ("Credit Stress", "credit_stress", "LQD/HYG ratio", {
+                        "elevated": ("🟠", "#c05621", "≥80th pctile"),
+                        "watch": ("🟡", "#a76a00", "60-80th"), "calm": ("🟢", "#216c30", "<60th")
+                    }),
+                ]
+
+                for g_name, g_key, g_desc, g_levels in gauge_defs:
+                    g = fear_gauges.get(g_key)
+                    if g:
+                        g_status = g.get("status", "calm")
+                        g_icon, g_color, g_thr = g_levels.get(g_status, ("⚪", "#888", "—"))
+                        g_val = g["value"]
+                        g_chg = g.get("chg", 0)
+                        chg_arrow = "▲" if g_chg > 0 else "▼" if g_chg < 0 else "–"
+                        chg_color = "#a92e2e" if g_chg > 2 else "#c05621" if g_chg > 0 else "#216c30" if g_chg < 0 else "#888"
+
+                        # Mini sparkline using unicode blocks
+                        spark = g.get("spark", [])
+                        spark_str = ""
+                        if spark and len(spark) > 4:
+                            mn, mx = min(spark), max(spark)
+                            rng = mx - mn if mx > mn else 1
+                            blocks = "▁▂▃▄▅▆▇█"
+                            spark_str = "".join(blocks[min(7, int((v - mn) / rng * 7.99))] for v in spark[-20:])
+
+                        st.markdown(
+                            f'<div style="display:flex;align-items:center;gap:6px;padding:5px 10px;margin:2px 0;'
+                            f'border-radius:6px;background:#f8f9fb;border-left:3px solid {g_color}">'
+                            f'<span style="font-size:12px">{g_icon}</span>'
+                            f'<span style="font-size:12px;font-weight:700;min-width:85px">{g_name}</span>'
+                            f'<span style="font-size:14px;font-weight:700;min-width:50px">{g_val}</span>'
+                            f'<span style="font-size:10px;color:{chg_color};min-width:45px">{chg_arrow} {abs(g_chg):.1f}%</span>'
+                            f'<span style="font-size:10px;color:#aaa;letter-spacing:-0.5px">{spark_str}</span>'
+                            f'<span style="flex:1;font-size:10px;color:{MUTED};text-align:right">{g_thr}</span>'
+                            f'</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(
+                            f'<div style="display:flex;align-items:center;gap:6px;padding:5px 10px;margin:2px 0;'
+                            f'border-radius:6px;background:#f8f9fb;border-left:3px solid #ccc">'
+                            f'<span style="font-size:12px">⚪</span>'
+                            f'<span style="font-size:12px;font-weight:700;min-width:85px">{g_name}</span>'
+                            f'<span style="font-size:12px;color:{MUTED}">unavailable</span>'
+                            f'<span style="flex:1;font-size:10px;color:{MUTED};text-align:right">{g_desc}</span>'
+                            f'</div>', unsafe_allow_html=True)
+
+                st.caption("MOVE ≥80 + India VIX ≥20 + Credit stress ≥80th pctile → triple confirmation")
 
         else:
             st.warning("⚠️ Could not fetch Nifty 50 data — check yfinance connection.")
