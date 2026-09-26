@@ -1056,7 +1056,8 @@ tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system, tab_fram
 # TAB 1 — COCKPIT
 # ═══════════════════════════════════════════════════════════
 with tab_cockpit:
-    # Alert banner
+
+    # ── DECISION BOARD — alert banners ──
     if danger_alerts:
         html = "".join(
             f'<div style="padding:5px 12px;font-size:13px"><span class="dot danger-dot"></span>'
@@ -1081,269 +1082,109 @@ with tab_cockpit:
             f'<div style="padding:4px 12px;font-weight:600;color:#d97706;font-size:13px">⚡ {len(warning_alerts)} Watch Item(s)</div>'
             f'{html}</div>', unsafe_allow_html=True)
 
-    # Live price badge
-    if has_live:
-        if _is_nse_market_hours():
-            st.markdown(
-                '<div style="text-align:right;margin-bottom:-12px;font-size:11px;color:#667085">'
-                '🟢 Live prices · yfinance · refreshes every 2 min</div>', unsafe_allow_html=True)
+    # ════════════════════════════════════════════════════════
+    # ① MARKET REGIME — "What's the environment?"
+    # ════════════════════════════════════════════════════════
+    st.markdown("### ① Market Regime")
+    st.caption("What's the environment?")
+
+    if nifty:
+        pct = nifty["pct_from_ema"]
+        bpct = breadth["pct_above"] if breadth else None
+        bpct_025 = breadth_025pct["pct_above"] if breadth_025pct else None
+
+        # Determine system state using DUAL-CONDITION logic
+        def tier_met(ema_thr, breadth_max):
+            """Check if both conditions are satisfied."""
+            ema_ok = pct <= ema_thr
+            breadth_ok = bpct is not None and bpct <= breadth_max
+            return ema_ok and breadth_ok
+
+        if tier_met(-25, 20):
+            sys_state, sys_icon, sys_color, sys_bg = "DEPLOY ALL", "🔴", "#a92e2e", "#feecec"
+            deploy_perm = "FULL DEPLOYMENT — ALL 5 TIERS"
+        elif tier_met(-20, 25):
+            sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T4", "🟠", "#c05621", "#fff0e6"
+            deploy_perm = "DEPLOY TIER 4 — 32% tactical deployed"
+        elif tier_met(-15, 30):
+            sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T3", "🟡", "#a76a00", "#fff6dd"
+            deploy_perm = "DEPLOY TIER 3 — 24% tactical deployed"
+        elif tier_met(-10, 35):
+            sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T2", "🟡", "#a76a00", "#fff6dd"
+            deploy_perm = "DEPLOY TIER 2 — 16% tactical deployed"
+        elif tier_met(-5, 40):
+            sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T1", "🟡", "#a76a00", "#fff6dd"
+            deploy_perm = "DEPLOY TIER 1 — 8% tactical deployed"
+        elif pct >= 20 and bpct is not None and bpct >= 80:
+            sys_state, sys_icon, sys_color, sys_bg = "OVEREXTENDED", "⚡", "#7c3aed", "#f3f0ff"
+            deploy_perm = "PROFIT HARVEST → peel tactical back to cash"
+        elif pct >= 15:
+            sys_state, sys_icon, sys_color, sys_bg = "EXTENDED", "📈", "#2563eb", "#eff6ff"
+            deploy_perm = "MONITOR — approaching harvest zone"
+        elif pct <= -5 and (bpct is None or bpct > 40):
+            sys_state, sys_icon, sys_color, sys_bg = "CAUTION", "⚠️", "#a76a00", "#fff6dd"
+            deploy_perm = "EMA DIPPED — BREADTH NOT CONFIRMED, HOLD"
         else:
-            freshest = max((s.get("price_updated_at") or "" for s in D["stocks"] if s.get("current_price")), default="")
-            if freshest:
-                try:
-                    upd = datetime.fromisoformat(str(freshest).replace("Z", "+00:00"))
-                    mins_ago = int((datetime.now(timezone.utc) - upd).total_seconds() / 60)
-                    if mins_ago < 60:
-                        age_txt = f"{mins_ago}m ago"
-                    elif mins_ago < 1440:
-                        age_txt = f"{mins_ago // 60}h ago"
-                    else:
-                        age_txt = f"{mins_ago // 1440}d ago"
-                    st.markdown(
-                        f'<div style="text-align:right;margin-bottom:-12px;font-size:11px;color:#667085">'
-                        f'🔵 Screener.in prices · updated {age_txt}</div>', unsafe_allow_html=True)
-                except Exception:
-                    pass
+            sys_state, sys_icon, sys_color, sys_bg = "NORMAL", "🟢", "#216c30", "#eaf7ed"
+            deploy_perm = "HOLD / WAIT FOR RULE TRIGGER"
 
-    # KPIs
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Portfolio Value", fmt(total_value),
-              delta=f"{unrealized_pnl / total_invested * 100:+.1f}% unrealized" if total_invested else None)
-    k2.metric("Invested", fmt(total_invested))
-    k3.metric("Net P&L", fmt(net_pnl),
-              delta="realized + unrealized")
-    k4.metric("Active Positions", len(positions), delta=f"{len(set(p['sector'] for p in positions))} sectors")
-    largest = max(positions, key=lambda p: p["weight"]) if positions else None
-    k5.metric("Largest Weight", f"{largest['weight']:.1f}%" if largest else "—",
-              delta=largest["ticker"] if largest else None)
-    k6.metric("Closed Trades", len(D["closed"]),
-              delta=f"Win rate {wins}/{len(D['closed'])}" if D["closed"] else None)
+        # Fear gauge confirmation overlay
+        fg_signals = fear_gauges.get("signals_on", 0) if fear_gauges else 0
+        fg_conf_label = ""
+        if sys_state.startswith("DEPLOY") and fg_signals > 0:
+            if fg_signals == 3:
+                fg_conf_label = " · 🔴 TRIPLE CONFIRMED — max conviction"
+            elif fg_signals == 2:
+                fg_conf_label = " · 🟠 DOUBLE CONFIRMED — enhanced sizing"
+            elif fg_signals == 1:
+                fg_conf_label = " · 🟡 1 fear gauge elevated"
 
-    st.divider()
+        # ── Market Regime: Left (Nifty strip + Fear gauges) | Right (Nifty chart) ──
+        regime_left, regime_right = st.columns(2)
 
-    # Two columns: Action Queue + Sector Allocation
-    col_left, col_right = st.columns([1.3, 1])
-
-    with col_left:
-        st.markdown("#### 🚨 Action Queue")
-        st.caption("Exception-first view — items that need your decision")
-        all_alerts = danger_alerts + warning_alerts
-        if all_alerts:
-            for a in all_alerts:
-                dot_cls = "danger-dot" if a["level"] == "danger" else "warning-dot"
-                badge_cls = "badge-red" if a["level"] == "danger" else "badge-amber"
-                st.markdown(
-                    f'<div class="action-card">'
-                    f'<div><span class="dot {dot_cls}"></span><strong>{a["ticker"]}</strong><br/>'
-                    f'<small style="color:#667085">{a["msg"]}</small></div>'
-                    f'<span class="badge {badge_cls}">{a["type"]}</span></div>',
-                    unsafe_allow_html=True)
-        else:
-            st.success("No action items — all positions within parameters.")
-
-    with col_right:
-        st.markdown("#### Sector Allocation")
-        st.caption("By current portfolio value")
-        sector_vals = {}
-        for p in positions:
-            sector_vals[p["sector"]] = sector_vals.get(p["sector"], 0) + p["current_value"]
-        sectors_sorted = sorted(sector_vals.items(), key=lambda x: x[1], reverse=True)
-
-        fig_sector = go.Figure()
-        names = [s[0] for s in sectors_sorted]
-        vals = [s[1] for s in sectors_sorted]
-        pcts = [v / total_value * 100 for v in vals]
-        colors = SECTOR_COLORS[:len(names)]
-
-        fig_sector.add_trace(go.Bar(
-            y=names[::-1], x=pcts[::-1],
-            orientation='h',
-            marker_color=colors[:len(names)][::-1],
-            text=[f"{p:.1f}%" for p in pcts[::-1]],
-            textposition='outside',
-            hovertemplate='%{y}: %{x:.1f}%<extra></extra>',
-        ))
-        fig_sector.update_layout(
-            height=280, margin=dict(l=0, r=40, t=10, b=10),
-            xaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None, showticklabels=False),
-            yaxis=dict(showgrid=False, title=None),
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        )
-        st.plotly_chart(fig_sector, use_container_width=True)
-
-    st.divider()
-
-    # Market / Deployment State + Equity Curve
-    md_left, md_right = st.columns(2)
-
-    with md_left:
-        st.markdown("#### 📡 Market / Deployment State")
-        st.caption("Dual-Asset Tactical Ladder — rules-based market engine")
-
-        if nifty:
-            pct = nifty["pct_from_ema"]
-            bpct = breadth["pct_above"] if breadth else None  # 1% P&F for ladder decisions
-            bpct_025 = breadth_025pct["pct_above"] if breadth_025pct else None  # 0.25% for info
-
-            # Determine system state using DUAL-CONDITION logic
-            # Both EMA distance AND breadth filter must be met for deployment tiers
-            def tier_met(ema_thr, breadth_max):
-                """Check if both conditions are satisfied."""
-                ema_ok = pct <= ema_thr
-                breadth_ok = bpct is not None and bpct <= breadth_max
-                return ema_ok and breadth_ok
-
-            if tier_met(-25, 20):
-                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY ALL", "🔴", "#a92e2e", "#feecec"
-                deploy_perm = "FULL DEPLOYMENT — ALL 5 TIERS"
-            elif tier_met(-20, 25):
-                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T4", "🟠", "#c05621", "#fff0e6"
-                deploy_perm = "DEPLOY TIER 4 — 32% tactical deployed"
-            elif tier_met(-15, 30):
-                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T3", "🟡", "#a76a00", "#fff6dd"
-                deploy_perm = "DEPLOY TIER 3 — 24% tactical deployed"
-            elif tier_met(-10, 35):
-                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T2", "🟡", "#a76a00", "#fff6dd"
-                deploy_perm = "DEPLOY TIER 2 — 16% tactical deployed"
-            elif tier_met(-5, 40):
-                sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T1", "🟡", "#a76a00", "#fff6dd"
-                deploy_perm = "DEPLOY TIER 1 — 8% tactical deployed"
-            elif pct >= 20 and bpct is not None and bpct >= 80:
-                sys_state, sys_icon, sys_color, sys_bg = "OVEREXTENDED", "⚡", "#7c3aed", "#f3f0ff"
-                deploy_perm = "PROFIT HARVEST → peel tactical back to cash"
-            elif pct >= 15:
-                sys_state, sys_icon, sys_color, sys_bg = "EXTENDED", "📈", "#2563eb", "#eff6ff"
-                deploy_perm = "MONITOR — approaching harvest zone"
-            elif pct <= -5 and (bpct is None or bpct > 40):
-                # EMA dipped but breadth hasn't confirmed — false start filter
-                sys_state, sys_icon, sys_color, sys_bg = "CAUTION", "⚠️", "#a76a00", "#fff6dd"
-                deploy_perm = "EMA DIPPED — BREADTH NOT CONFIRMED, HOLD"
-            else:
-                sys_state, sys_icon, sys_color, sys_bg = "NORMAL", "🟢", "#216c30", "#eaf7ed"
-                deploy_perm = "HOLD / WAIT FOR RULE TRIGGER"
-
-            # Fear gauge confirmation overlay
-            fg_signals = fear_gauges.get("signals_on", 0) if fear_gauges else 0
-            fg_conf_label = ""
-            if sys_state.startswith("DEPLOY") and fg_signals > 0:
-                if fg_signals == 3:
-                    fg_conf_label = " · 🔴 TRIPLE CONFIRMED — max conviction"
-                elif fg_signals == 2:
-                    fg_conf_label = " · 🟠 DOUBLE CONFIRMED — enhanced sizing"
-                elif fg_signals == 1:
-                    fg_conf_label = " · 🟡 1 fear gauge elevated"
-
-            # State badge
+        with regime_left:
+            # Nifty price strip
+            t1_trigger = nifty["ema200"] * 0.95
+            dist_to_t1 = abs(pct - (-5.0))
+            ema_dist_bg = "#feecec" if pct < -10 else "#fff6dd" if pct < 0 else "#dcfce7" if pct < 10 else "#ccfbf1"
+            ema_dist_color = "#991b1b" if pct < -10 else "#92400e" if pct < 0 else "#166534" if pct < 10 else "#115e59"
             st.markdown(
-                f'<div style="background:{sys_bg};border:1px solid {sys_color}30;border-radius:10px;padding:14px 16px;margin-bottom:10px">'
-                f'<div style="font-size:11px;color:{MUTED};text-transform:uppercase;letter-spacing:0.04em">Current portfolio state</div>'
-                f'<div style="font-size:22px;font-weight:800;color:{sys_color};margin:4px 0">{sys_icon} {sys_state}</div>'
-                f'<div style="font-size:12px;color:#444">Deployment permission: <strong>{deploy_perm}</strong>{fg_conf_label}</div>'
+                f'<div style="background:var(--surface, #fff);border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px">'
+                f'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">'
+                f'<span style="font-size:26px;font-weight:800">{nifty["price"]:,.0f}</span>'
+                f'<span style="font-size:14px;font-weight:600;color:{"#16a34a" if nifty["daily_chg"] >= 0 else "#dc2626"}">'
+                f'{"↑" if nifty["daily_chg"] >= 0 else "↓"} {nifty["daily_chg"]:+.2f}%</span>'
+                f'<span style="font-size:12px;padding:3px 8px;border-radius:6px;background:{ema_dist_bg};color:{ema_dist_color};font-weight:600">'
+                f'{pct:+.2f}% vs 200 EMA</span>'
+                f'</div>'
+                f'<div style="display:flex;gap:16px;font-size:11px;color:#6b7280;margin-top:6px;flex-wrap:wrap">'
+                f'<span>200 EMA: {nifty["ema200"]:,.0f}</span>'
+                f'<span>T1 trigger: {t1_trigger:,.0f} (−5.0%)</span>'
+                f'<span style="color:#d97706">{dist_to_t1:.2f}% from T1</span>'
+                f'</div>'
                 f'</div>', unsafe_allow_html=True)
 
-            # Nifty metrics row — 5 cols (EMA + both breadth sources)
-            nm1, nm2, nm3, nm4, nm5 = st.columns(5)
-            nm1.metric("Nifty 50", f"{nifty['price']:,.0f}", delta=f"{nifty['daily_chg']:+.2f}%")
-            nm2.metric("200 EMA", f"{nifty['ema200']:,.0f}")
-            ema_delta_color = "inverse" if pct < 0 else "normal"
-            nm3.metric("vs 200 EMA", f"{pct:+.2f}%",
-                       delta="below" if pct < 0 else "above", delta_color=ema_delta_color)
-            # P&F 1% breadth (structural trend)
+            # Breadth metrics row
+            bm1, bm2 = st.columns(2)
             if breadth_1pct:
                 b1_color = "inverse" if breadth_1pct["pct_above"] < 50 else "normal"
-                nm4.metric("P&F 1%", f'{breadth_1pct["pct_above"]}%',
+                bm1.metric("P&F 1% Breadth", f'{breadth_1pct["pct_above"]}%',
                            delta=f'{breadth_1pct["date"]}', delta_color=b1_color)
             elif breadth_yf:
                 b1_color = "inverse" if breadth_yf["pct_above"] < 50 else "normal"
-                nm4.metric("Breadth (yf)", f'{breadth_yf["pct_above"]}%',
+                bm1.metric("Breadth (yf)", f'{breadth_yf["pct_above"]}%',
                            delta=f'{breadth_yf["above_count"]}/{breadth_yf["total"]} >200 DMA',
                            delta_color=b1_color)
             else:
-                nm4.metric("P&F 1%", "—", delta="unavailable")
-            # P&F 0.25% breadth (short-term shifts)
+                bm1.metric("P&F 1%", "—", delta="unavailable")
             if breadth_025pct:
                 b025_color = "inverse" if breadth_025pct["pct_above"] < 50 else "normal"
-                nm5.metric("P&F 0.25%", f'{breadth_025pct["pct_above"]}%',
+                bm2.metric("P&F 0.25%", f'{breadth_025pct["pct_above"]}%',
                            delta=f'{breadth_025pct["date"]}', delta_color=b025_color)
             else:
-                nm5.metric("P&F 0.25%", "—", delta="unavailable")
+                bm2.metric("P&F 0.25%", "—", delta="unavailable")
 
-            # Tier ladder visualization — now shows BOTH conditions
-            st.markdown("")
-            st.markdown("**Deployment Ladder** <span style='font-size:11px;color:#888'>(dual-condition: EMA + 1% P&F breadth · 0.25% shown for context)</span>",
-                        unsafe_allow_html=True)
-            for tier in LADDER_TIERS:
-                thr = tier["threshold"]
-                bmax = tier["breadth_max"]
-                ema_hit = pct <= thr
-                breadth_hit = bpct is not None and bpct <= bmax
-                both_met = ema_hit and breadth_hit
-                trigger_price = nifty["ema200"] * (1 + thr / 100)
-
-                # Check if this is the "current" active tier
-                is_current = both_met and (tier["tier"] == 1 or not (
-                    pct <= LADDER_TIERS[tier["tier"] - 2]["threshold"] and
-                    (bpct is not None and bpct <= LADDER_TIERS[tier["tier"] - 2]["breadth_max"])
-                ))
-
-                if is_current:
-                    row_bg = f"{sys_color}15"
-                    row_border = sys_color
-                    marker = "▶"
-                elif both_met:
-                    row_bg = "#eaf7ed"
-                    row_border = GREEN
-                    marker = "✅"
-                else:
-                    row_bg = "#f8f9fb"
-                    row_border = "#e5e7eb"
-                    marker = "⬜"
-
-                # Status pills for each condition
-                ema_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
-                            f'background:{"#dcfce7" if ema_hit else "#fee2e2"};'
-                            f'color:{"#166534" if ema_hit else "#991b1b"}">EMA {"✓" if ema_hit else "✗"}</span>')
-                # 1% breadth pill (used for deployment decisions)
-                breadth_pill_color = "#dcfce7" if breadth_hit else "#fee2e2" if bpct is not None else "#f3f4f6"
-                breadth_pill_text = "#166534" if breadth_hit else "#991b1b" if bpct is not None else "#888"
-                breadth_status = "✓" if breadth_hit else "✗" if bpct is not None else "?"
-                breadth_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
-                                f'background:{breadth_pill_color};color:{breadth_pill_text}">'
-                                f'1%≤{bmax} {breadth_status}</span>')
-                # 0.25% breadth pill (informational — short-term sensitivity)
-                b025_hit = bpct_025 is not None and bpct_025 <= bmax
-                b025_pill_color = "#dbeafe" if b025_hit else "#fef3c7" if bpct_025 is not None else "#f3f4f6"
-                b025_pill_text = "#1e40af" if b025_hit else "#92400e" if bpct_025 is not None else "#888"
-                b025_status = "✓" if b025_hit else "✗" if bpct_025 is not None else "?"
-                breadth_025_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
-                                    f'background:{b025_pill_color};color:{b025_pill_text}">'
-                                    f'.25%≤{bmax} {b025_status}</span>')
-
-                st.markdown(
-                    f'<div style="display:flex;align-items:center;gap:6px;padding:6px 10px;margin:2px 0;'
-                    f'border-radius:6px;background:{row_bg};border-left:3px solid {row_border}">'
-                    f'<span style="font-size:14px">{marker}</span>'
-                    f'<span style="min-width:26px;font-weight:700;font-size:13px">T{tier["tier"]}</span>'
-                    f'<span style="font-size:12px;color:#444">{thr}%</span>'
-                    f'{ema_pill}{breadth_pill}{breadth_025_pill}'
-                    f'<span style="flex:1;font-size:11px;color:#666;text-align:right">→ {tier["deploy_pct"]}% Midcap 150</span>'
-                    f'<span style="font-size:11px;color:{MUTED};min-width:70px;text-align:right">₹{trigger_price:,.0f}</span>'
-                    f'</div>', unsafe_allow_html=True)
-
-            # Capital architecture
-            st.markdown("")
-            st.markdown("**Capital Architecture**")
-            arch_colors = ["#355ec9", "#1baf7a", "#eda100"]
-            for i, ca in enumerate(CAPITAL_ARCH):
-                st.markdown(
-                    f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0">'
-                    f'<div style="width:10px;height:10px;border-radius:3px;background:{arch_colors[i]}"></div>'
-                    f'<span style="font-size:13px;min-width:160px"><strong>{ca["name"]}</strong></span>'
-                    f'<span style="font-size:13px;font-weight:700;min-width:35px">{ca["pct"]}%</span>'
-                    f'<span style="font-size:11px;color:{MUTED}">{ca["desc"]}</span>'
-                    f'</div>', unsafe_allow_html=True)
-
-            # ── Fear Gauges Panel ──
+            # Fear Gauges inline
             st.markdown("")
             st.markdown("**Fear Gauges** <span style='font-size:11px;color:#888'>(triple confirmation for contrarian deployment)</span>",
                         unsafe_allow_html=True)
@@ -1351,8 +1192,6 @@ with tab_cockpit:
             if fear_gauges:
                 fg_signals = fear_gauges.get("signals_on", 0)
                 fg_conf = fear_gauges.get("confirmation", "NONE")
-
-                # Confirmation badge
                 conf_colors = {
                     "TRIPLE": ("#a92e2e", "#feecec", "🔴🔴🔴 Maximum conviction — deploy aggressively"),
                     "DOUBLE": ("#c05621", "#fff0e6", "🟠🟠 Elevated — enhanced tactical sizing"),
@@ -1366,7 +1205,6 @@ with tab_cockpit:
                     f'<div style="font-size:12px;color:{cc};font-weight:600;margin-top:2px">{clabel}</div>'
                     f'</div>', unsafe_allow_html=True)
 
-                # Individual gauge rows
                 gauge_defs = [
                     ("MOVE Index", "move", "US Treasury vol", {
                         "extreme": ("🔴", "#a92e2e", "≥100"), "elevated": ("🟠", "#c05621", "≥80"),
@@ -1381,7 +1219,6 @@ with tab_cockpit:
                         "watch": ("🟡", "#a76a00", "60-80th"), "calm": ("🟢", "#216c30", "<60th")
                     }),
                 ]
-
                 for g_name, g_key, g_desc, g_levels in gauge_defs:
                     g = fear_gauges.get(g_key)
                     if g:
@@ -1391,8 +1228,6 @@ with tab_cockpit:
                         g_chg = g.get("chg", 0)
                         chg_arrow = "▲" if g_chg > 0 else "▼" if g_chg < 0 else "–"
                         chg_color = "#a92e2e" if g_chg > 2 else "#c05621" if g_chg > 0 else "#216c30" if g_chg < 0 else "#888"
-
-                        # Mini sparkline using unicode blocks
                         spark = g.get("spark", [])
                         spark_str = ""
                         if spark and len(spark) > 4:
@@ -1400,7 +1235,6 @@ with tab_cockpit:
                             rng = mx - mn if mx > mn else 1
                             blocks = "▁▂▃▄▅▆▇█"
                             spark_str = "".join(blocks[min(7, int((v - mn) / rng * 7.99))] for v in spark[-20:])
-
                         st.markdown(
                             f'<div style="display:flex;align-items:center;gap:6px;padding:5px 10px;margin:2px 0;'
                             f'border-radius:6px;background:#f8f9fb;border-left:3px solid {g_color}">'
@@ -1421,64 +1255,303 @@ with tab_cockpit:
                             f'<span style="flex:1;font-size:10px;color:{MUTED};text-align:right">{g_desc}</span>'
                             f'</div>', unsafe_allow_html=True)
 
-                st.caption("MOVE ≥80 + India VIX ≥20 + Credit stress ≥80th pctile → triple confirmation")
+        with regime_right:
+            # Nifty vs 200 EMA chart — Full Cycle View with harvest + deploy zones
+            if nifty.get("chart") is not None:
+                st.markdown("**Nifty 50 vs 200 EMA** <span style='font-size:11px;color:#888'>Full Cycle View — 120 trading days</span>",
+                            unsafe_allow_html=True)
+                cdf = nifty["chart"]
+                fig_nifty = go.Figure()
 
-        else:
-            st.warning("⚠️ Could not fetch Nifty 50 data — check yfinance connection.")
-            st.caption("The Tactical Ladder requires live Nifty 50 price and 200 EMA.")
+                # Harvest zone shading (above EMA)
+                ema_val = nifty["ema200"]
+                h1_price = ema_val * 1.05
+                h4_price = ema_val * 1.20
 
-    with md_right:
-        # Nifty vs 200 EMA chart
-        if nifty and nifty.get("chart") is not None:
-            st.markdown("#### 📈 Nifty 50 vs 200 EMA")
-            st.caption("Tactical Ladder trigger zones — 120 trading days")
-            cdf = nifty["chart"]
-            fig_nifty = go.Figure()
-            fig_nifty.add_trace(go.Scatter(
-                x=cdf["Date"], y=cdf["Close"], mode='lines',
-                name='Nifty 50', line=dict(color="#355ec9", width=2),
-                hovertemplate='%{x}<br>Nifty: %{y:,.0f}<extra></extra>',
-            ))
-            fig_nifty.add_trace(go.Scatter(
-                x=cdf["Date"], y=cdf["EMA200"], mode='lines',
-                name='200 EMA', line=dict(color="#eb6834", width=2, dash='dash'),
-                hovertemplate='%{x}<br>200 EMA: %{y:,.0f}<extra></extra>',
-            ))
-            # Add tier trigger lines
-            for tier in LADDER_TIERS[:3]:  # Show T1-T3 lines
-                trigger = nifty["ema200"] * (1 + tier["threshold"] / 100)
-                fig_nifty.add_hline(y=trigger, line_dash="dot", line_color="#c83b3b",
-                                    line_width=1, opacity=0.4,
-                                    annotation_text=f"T{tier['tier']} ({tier['threshold']}%)",
-                                    annotation_position="left",
-                                    annotation_font_size=9, annotation_font_color="#999")
-            fig_nifty.update_layout(
-                height=300, margin=dict(l=0, r=0, t=10, b=10),
-                xaxis=dict(showgrid=False, title=None),
-                yaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None),
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                showlegend=True,
-            )
-            st.plotly_chart(fig_nifty, use_container_width=True)
-        else:
-            st.info("Nifty data unavailable — install yfinance for live chart.")
+                # Add harvest zone rectangle (H1 to H4)
+                fig_nifty.add_hrect(
+                    y0=h1_price, y1=h4_price,
+                    fillcolor="rgba(13,148,136,0.06)", line_width=0,
+                    annotation_text="HARVEST ZONE", annotation_position="top left",
+                    annotation_font_size=9, annotation_font_color="#0d9488",
+                )
 
-    # Portfolio Equity Curve — full width below
+                # Add deploy zone rectangle (T1 to T3)
+                t1_price = ema_val * 0.95
+                t3_price = ema_val * 0.85
+                fig_nifty.add_hrect(
+                    y0=t3_price, y1=t1_price,
+                    fillcolor="rgba(220,38,38,0.04)", line_width=0,
+                    annotation_text="DEPLOY ZONE", annotation_position="bottom left",
+                    annotation_font_size=9, annotation_font_color="#dc2626",
+                )
+
+                # Nifty price line
+                fig_nifty.add_trace(go.Scatter(
+                    x=cdf["Date"], y=cdf["Close"], mode='lines',
+                    name='Nifty 50', line=dict(color="#355ec9", width=2),
+                    hovertemplate='%{x}<br>Nifty: %{y:,.0f}<extra></extra>',
+                ))
+                # 200 EMA line
+                fig_nifty.add_trace(go.Scatter(
+                    x=cdf["Date"], y=cdf["EMA200"], mode='lines',
+                    name='200 EMA', line=dict(color="#eb6834", width=2, dash='dash'),
+                    hovertemplate='%{x}<br>200 EMA: %{y:,.0f}<extra></extra>',
+                ))
+
+                # Harvest tier lines (H1-H4)
+                HARVEST_LINES = [
+                    (5, "H1", "#0d9488"), (10, "H2", "#0d9488"),
+                    (15, "H3", "#0d9488"), (20, "H4", "#0d9488"),
+                ]
+                for h_pct, h_label, h_color in HARVEST_LINES:
+                    h_price = ema_val * (1 + h_pct / 100)
+                    fig_nifty.add_hline(y=h_price, line_dash="dot", line_color=h_color,
+                                        line_width=1, opacity=0.35,
+                                        annotation_text=f"{h_label} (+{h_pct}%)",
+                                        annotation_position="right",
+                                        annotation_font_size=8, annotation_font_color="#0d9488")
+
+                # Deploy tier lines (T1-T3)
+                for tier in LADDER_TIERS[:3]:
+                    trigger = ema_val * (1 + tier["threshold"] / 100)
+                    fig_nifty.add_hline(y=trigger, line_dash="dot", line_color="#c83b3b",
+                                        line_width=1, opacity=0.35,
+                                        annotation_text=f"T{tier['tier']} ({tier['threshold']}%)",
+                                        annotation_position="left",
+                                        annotation_font_size=8, annotation_font_color="#999")
+
+                fig_nifty.update_layout(
+                    height=360, margin=dict(l=0, r=60, t=10, b=10),
+                    xaxis=dict(showgrid=False, title=None),
+                    yaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    showlegend=True,
+                )
+                st.plotly_chart(fig_nifty, use_container_width=True)
+            else:
+                st.info("Nifty data unavailable — install yfinance for live chart.")
+    else:
+        st.warning("⚠️ Could not fetch Nifty 50 data — check yfinance connection.")
+        st.caption("The Tactical Ladder requires live Nifty 50 price and 200 EMA.")
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════
+    # ② TACTICAL CYCLE — "Should I deploy or harvest?"
+    # ════════════════════════════════════════════════════════
+    st.markdown("### ② Tactical Cycle")
+    st.caption("Should I deploy or harvest?")
+
+    if nifty:
+        tc_left, tc_right = st.columns([1, 2])
+
+        with tc_left:
+            # Cycle position badge
+            st.markdown(
+                f'<div style="background:{sys_bg};border:1px solid {sys_color}30;border-left:4px solid {sys_color};'
+                f'border-radius:10px;padding:14px 16px;margin-bottom:10px">'
+                f'<div style="font-size:11px;color:{MUTED};text-transform:uppercase;letter-spacing:0.04em">Cycle Position</div>'
+                f'<div style="font-size:22px;font-weight:800;color:{sys_color};margin:4px 0">{sys_icon} {sys_state}</div>'
+                f'<div style="font-size:12px;color:#444">Deployment permission: <strong>{deploy_perm}</strong>{fg_conf_label}</div>'
+                f'</div>', unsafe_allow_html=True)
+
+            # Fear modifier summary
+            fg_s = fear_gauges.get("signals_on", 0) if fear_gauges else 0
+            fg_mult = "2×" if fg_s == 3 else "1.5×" if fg_s == 2 else "1×"
+            st.markdown(
+                f'<div style="font-size:12px;color:#444;line-height:1.7;margin-top:8px">'
+                f'<strong>Fear modifier:</strong> {fg_s}/3 → {fg_mult} allocation<br>'
+                f'<strong>If 2/3:</strong> 1.5× (T1 = 12% not 8%)<br>'
+                f'<strong>If 3/3:</strong> 2× + fires 1% early'
+                f'</div>', unsafe_allow_html=True)
+
+            # Capital architecture
+            st.markdown("")
+            st.markdown("**Capital Architecture**")
+            arch_colors = ["#355ec9", "#1baf7a", "#eda100"]
+            for i, ca in enumerate(CAPITAL_ARCH):
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0">'
+                    f'<div style="width:10px;height:10px;border-radius:3px;background:{arch_colors[i]}"></div>'
+                    f'<span style="font-size:13px;min-width:140px"><strong>{ca["name"]}</strong></span>'
+                    f'<span style="font-size:13px;font-weight:700;min-width:35px">{ca["pct"]}%</span>'
+                    f'<span style="font-size:11px;color:{MUTED}">{ca["desc"]}</span>'
+                    f'</div>', unsafe_allow_html=True)
+
+        with tc_right:
+            # Full Cycle Ladder — Harvest above EMA + Deploy below EMA
+            st.markdown("**Full Cycle Ladder** <span style='font-size:11px;color:#888'>Deploy below EMA · Harvest above EMA</span>",
+                        unsafe_allow_html=True)
+
+            # ── Harvest tiers (H4 → H1, above EMA) ──
+            st.markdown(
+                '<div style="background:#ccfbf120;border:1px solid #0d948830;border-radius:6px;padding:4px 10px;margin:6px 0;'
+                'font-size:11px;font-weight:700;color:#115e59">▲ HARVEST — Profit Booking (above 200 EMA)</div>',
+                unsafe_allow_html=True)
+
+            HARVEST_TIERS = [
+                {"id": "H4", "pct": 20, "action": "Book 75%", "note": "euphoria zone"},
+                {"id": "H3", "pct": 15, "action": "Book 50%", "note": "90th pctile"},
+                {"id": "H2", "pct": 10, "action": "Book 25%", "note": "75th pctile"},
+                {"id": "H1", "pct": 5,  "action": "Trail 7%", "note": "set stops"},
+            ]
+
+            # Determine active harvest tier
+            active_harvest = None
+            if pct > 0:
+                for ht in HARVEST_TIERS:
+                    if pct >= ht["pct"]:
+                        active_harvest = ht["id"]
+                        break
+                if active_harvest is None and pct >= 5:
+                    active_harvest = "H1"
+
+            for ht in HARVEST_TIERS:
+                h_price = nifty["ema200"] * (1 + ht["pct"] / 100)
+                is_active_h = (active_harvest == ht["id"])
+                if is_active_h:
+                    h_bg = "#ccfbf140"
+                    h_border = "#0d9488"
+                    h_opacity = "1"
+                    h_weight = "700"
+                else:
+                    h_bg = "#f8f9fb"
+                    h_border = "#e5e7eb"
+                    h_opacity = "0.45"
+                    h_weight = "400"
+
+                h_action_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
+                                 f'background:#ccfbf1;color:#115e59">{ht["action"]}</span>')
+                h_note_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
+                               f'background:#f3f4f6;color:#6b7280">{ht["note"]}</span>')
+
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:6px;padding:5px 10px;margin:2px 0;'
+                    f'border-radius:6px;background:{h_bg};border-left:3px solid {h_border};opacity:{h_opacity};font-weight:{h_weight}">'
+                    f'<span style="min-width:26px;font-weight:700;font-size:13px;color:#0d9488">{ht["id"]}</span>'
+                    f'<span style="font-size:12px;color:#444;min-width:50px">+{ht["pct"]}.0%</span>'
+                    f'{h_action_pill} {h_note_pill}'
+                    f'<span style="flex:1;font-size:11px;color:#0d9488;text-align:right">→ Tactical → Cash</span>'
+                    f'<span style="font-size:11px;color:{MUTED};min-width:70px;text-align:right">₹{h_price:,.0f}</span>'
+                    f'</div>', unsafe_allow_html=True)
+
+            # ── EMA divider ──
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:8px;margin:10px 0;padding:0 8px">'
+                f'<div style="flex:1;height:2px;background:#ea580c"></div>'
+                f'<span style="font-size:11px;font-weight:700;color:#ea580c">200 EMA = {nifty["ema200"]:,.0f}</span>'
+                f'<div style="flex:1;height:2px;background:#ea580c"></div>'
+                f'</div>', unsafe_allow_html=True)
+
+            # ── Deploy tiers (T1 → T5, below EMA) ──
+            st.markdown(
+                '<div style="background:#fef2f220;border:1px solid #dc262630;border-radius:6px;padding:4px 10px;margin:6px 0;'
+                'font-size:11px;font-weight:700;color:#991b1b">▼ DEPLOY — Capital Deployment (below 200 EMA)</div>',
+                unsafe_allow_html=True)
+
+            # Find the approaching/active deploy tier
+            active_deploy_tier = None
+            if pct < 0:
+                for tier in LADDER_TIERS:
+                    thr = tier["threshold"]
+                    bmax = tier["breadth_max"]
+                    ema_hit = pct <= thr
+                    breadth_hit = bpct is not None and bpct <= bmax
+                    both_met = ema_hit and breadth_hit
+                    is_current = both_met and (tier["tier"] == 1 or not (
+                        pct <= LADDER_TIERS[tier["tier"] - 2]["threshold"] and
+                        (bpct is not None and bpct <= LADDER_TIERS[tier["tier"] - 2]["breadth_max"])
+                    ))
+                    if is_current:
+                        active_deploy_tier = tier["tier"]
+                        break
+
+                # If no tier is fully met, find the approaching tier
+                if active_deploy_tier is None:
+                    for tier in LADDER_TIERS:
+                        if pct > tier["threshold"]:
+                            active_deploy_tier = tier["tier"]
+                            break
+
+            for tier in LADDER_TIERS:
+                thr = tier["threshold"]
+                bmax = tier["breadth_max"]
+                ema_hit = pct <= thr
+                breadth_hit = bpct is not None and bpct <= bmax
+                trigger_price = nifty["ema200"] * (1 + thr / 100)
+
+                # Active tier highlighting
+                is_active_t = (active_deploy_tier == tier["tier"])
+                if is_active_t:
+                    t_bg = "#fff6dd"
+                    t_border = "#d97706"
+                    t_opacity = "1"
+                    t_weight = "700"
+                else:
+                    t_bg = "#f8f9fb"
+                    t_border = "#e5e7eb"
+                    t_opacity = "0.45"
+                    t_weight = "400"
+
+                # Condition pills
+                ema_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
+                            f'background:{"#dcfce7" if ema_hit else "#fee2e2"};'
+                            f'color:{"#166534" if ema_hit else "#991b1b"}">EMA {"✓" if ema_hit else "✗"}</span>')
+                breadth_pill_color = "#dcfce7" if breadth_hit else "#fee2e2" if bpct is not None else "#f3f4f6"
+                breadth_pill_text = "#166534" if breadth_hit else "#991b1b" if bpct is not None else "#888"
+                breadth_status = "✓" if breadth_hit else "✗" if bpct is not None else "?"
+                breadth_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
+                                f'background:{breadth_pill_color};color:{breadth_pill_text}">'
+                                f'1%≤{bmax} {breadth_status}</span>')
+
+                # Fear modifier pill
+                fg_s_val = fear_gauges.get("signals_on", 0) if fear_gauges else 0
+                fear_label = f"Fear {fg_s_val}/3 → {'2×' if fg_s_val == 3 else '1.5×' if fg_s_val == 2 else '1×'}"
+                fear_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
+                             f'background:#f3f4f6;color:#6b7280">{fear_label}</span>')
+
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:6px;padding:5px 10px;margin:2px 0;'
+                    f'border-radius:6px;background:{t_bg};border-left:3px solid {t_border};opacity:{t_opacity};font-weight:{t_weight}">'
+                    f'<span style="min-width:26px;font-weight:700;font-size:13px;color:{"#d97706" if is_active_t else "#dc2626"}">T{tier["tier"]}</span>'
+                    f'<span style="font-size:12px;color:#444;min-width:50px">{thr}%</span>'
+                    f'{ema_pill} {breadth_pill} {fear_pill}'
+                    f'<span style="flex:1;font-size:11px;color:#666;text-align:right">→ {tier["deploy_pct"]}% Midcap 150</span>'
+                    f'<span style="font-size:11px;color:{MUTED};min-width:70px;text-align:right">₹{trigger_price:,.0f}</span>'
+                    f'</div>', unsafe_allow_html=True)
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════
+    # ③ PORTFOLIO — "How am I positioned?"
+    # ════════════════════════════════════════════════════════
+    st.markdown("### ③ Portfolio")
+    st.caption("How am I positioned?")
+
+    # KPIs
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Portfolio Value", fmt(total_value),
+              delta=f"{unrealized_pnl / total_invested * 100:+.1f}% unrealized" if total_invested else None)
+    k2.metric("Invested", fmt(total_invested))
+    k3.metric("Net P&L", fmt(net_pnl),
+              delta="realized + unrealized")
+    k4.metric("Active Positions", len(positions), delta=f"{len(set(p['sector'] for p in positions))} sectors")
+    largest = max(positions, key=lambda p: p["weight"]) if positions else None
+    k5.metric("Largest Weight", f"{largest['weight']:.1f}%" if largest else "—",
+              delta=largest["ticker"] if largest else None)
+    k6.metric("Closed Trades", len(D["closed"]),
+              delta=f"Win rate {wins}/{len(D['closed'])}" if D["closed"] else None)
+
+    # Portfolio Equity Curve
     st.markdown("#### 📈 Portfolio Equity Curve")
 
     snapshots = D.get("snapshots", [])
     all_lots = sorted(D["lots"], key=lambda l: l.get("lot_date") or "9999")
 
     if snapshots:
-        # ── Portfolio equity curve: Stock + Cash with carry-forward ──
-        # Stock  = sum of open positions' market value (from snapshots)
-        # Cash   = initial capital + cumulative cash events to date
-        # Carry-forward: if a position has no snapshot on a date (yfinance
-        # gap, partial day), use its last known value instead of zero.
         from collections import defaultdict
-
-        # Exit date lookup
         _exit_map = {}
         for cl in D.get("closed", []):
             tid = cl.get("trade_id")
@@ -1486,7 +1559,6 @@ with tab_cockpit:
             if tid and exd:
                 _exit_map[tid] = exd
 
-        # Cash flow events: entries (negative) and exits (positive)
         _cash_ev = []
         _cb_map = {}
         for pm in D["pos"]:
@@ -1510,7 +1582,6 @@ with tab_cockpit:
                     _cash_ev.append((exit_date, exit_price * qty))
         _cash_ev.sort()
 
-        # Initial capital = enough cash so balance never goes negative
         cum = 0
         min_cum = 0
         for _, amt in _cash_ev:
@@ -1518,7 +1589,6 @@ with tab_cockpit:
             min_cum = min(min_cum, cum)
         _init_cap = -min_cum if min_cum < 0 else 0
 
-        # Per-position snapshots (filtered: exclude post-exit)
         _pos_snap = defaultdict(dict)
         for snap in snapshots:
             tid = snap.get("trade_id")
@@ -1534,7 +1604,6 @@ with tab_cockpit:
             if _pos_snap else []
         )
 
-        # Sum stock with carry-forward for missing snapshots
         _last = {}
         _daily_stock = {}
         for d in all_dates:
@@ -1547,7 +1616,6 @@ with tab_cockpit:
                     total += _last[tid]
             _daily_stock[d] = total
 
-        # Build portfolio value = stock + cash for each date
         curve_dates = list(all_dates)
         curve_values = []
         for d in curve_dates:
@@ -1555,10 +1623,8 @@ with tab_cockpit:
             cash = _init_cap + sum(amt for ed, amt in _cash_ev if ed <= d)
             curve_values.append(stock + cash)
 
-        # Capital base line (constant)
         curve_capital = [_init_cap] * len(curve_dates)
 
-        # Add today's live point
         today_str = datetime.now().strftime("%Y-%m-%d")
         active_stock_eq = sum(p["current_value"] for p in positions)
         today_cash_eq = _init_cap + sum(amt for _, amt in _cash_ev)
@@ -1587,7 +1653,6 @@ with tab_cockpit:
             line=dict(color=MUTED, width=1.5, dash='dot'),
             hovertemplate='%{x}<br>Capital: ₹%{y:,.0f}<extra></extra>',
         ))
-        # Today's marker
         fig_equity.add_trace(go.Scatter(
             x=[curve_dates[-1]], y=[curve_values[-1]],
             mode='markers', name=f'Today ({fmt(curve_values[-1])})',
@@ -1604,7 +1669,6 @@ with tab_cockpit:
         st.plotly_chart(fig_equity, use_container_width=True)
 
     elif all_lots:
-        # Fallback: lot-event based curve (no daily snapshots yet)
         st.caption("Cumulative capital deployed (daily snapshots pending — run backfill for full equity curve)")
         lot_events = {}
         for lot in all_lots:
@@ -1654,6 +1718,56 @@ with tab_cockpit:
     else:
         st.caption("No lot data yet — equity curve needs lot entries with dates.")
 
+    # Sector Allocation + Action Queue side by side
+    port_left, port_right = st.columns([1, 1.3])
+
+    with port_left:
+        st.markdown("#### Sector Allocation")
+        st.caption("By current portfolio value")
+        sector_vals = {}
+        for p in positions:
+            sector_vals[p["sector"]] = sector_vals.get(p["sector"], 0) + p["current_value"]
+        sectors_sorted = sorted(sector_vals.items(), key=lambda x: x[1], reverse=True)
+
+        fig_sector = go.Figure()
+        names = [s[0] for s in sectors_sorted]
+        vals = [s[1] for s in sectors_sorted]
+        pcts = [v / total_value * 100 for v in vals]
+        colors = SECTOR_COLORS[:len(names)]
+
+        fig_sector.add_trace(go.Bar(
+            y=names[::-1], x=pcts[::-1],
+            orientation='h',
+            marker_color=colors[:len(names)][::-1],
+            text=[f"{p:.1f}%" for p in pcts[::-1]],
+            textposition='outside',
+            hovertemplate='%{y}: %{x:.1f}%<extra></extra>',
+        ))
+        fig_sector.update_layout(
+            height=250, margin=dict(l=0, r=40, t=10, b=10),
+            xaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None, showticklabels=False),
+            yaxis=dict(showgrid=False, title=None),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_sector, use_container_width=True)
+
+    with port_right:
+        st.markdown("#### 🚨 Action Queue")
+        st.caption("Exception-first view — items that need your decision")
+        all_alerts = danger_alerts + warning_alerts
+        if all_alerts:
+            for a in all_alerts:
+                dot_cls = "danger-dot" if a["level"] == "danger" else "warning-dot"
+                badge_cls = "badge-red" if a["level"] == "danger" else "badge-amber"
+                st.markdown(
+                    f'<div class="action-card">'
+                    f'<div><span class="dot {dot_cls}"></span><strong>{a["ticker"]}</strong><br/>'
+                    f'<small style="color:#667085">{a["msg"]}</small></div>'
+                    f'<span class="badge {badge_cls}">{a["type"]}</span></div>',
+                    unsafe_allow_html=True)
+        else:
+            st.success("No action items — all positions within parameters.")
+
     st.divider()
 
     # Sleeve P&L — expandable
@@ -1694,7 +1808,6 @@ with tab_cockpit:
                 })
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    # Total row
     total_ret = (unrealized_pnl / total_invested * 100) if total_invested else 0
     st.markdown(f"**Total Active** — Invested: {fmt(total_invested)} · Value: {fmt(total_value)} · "
                 f"P&L: **{fmt_pct(total_ret)}** ({fmt(unrealized_pnl)})")
