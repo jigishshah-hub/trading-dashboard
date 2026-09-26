@@ -1047,8 +1047,8 @@ with c2:
                 unsafe_allow_html=True)
 
 # ── Tabs ────────────────────────────────────────────────────
-tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system = st.tabs([
-    "🎯 Cockpit", "📊 Positions", "⚡ Risk", "📈 Performance", "🔬 Thesis Monitor", "⚙️ System & Data"
+tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system, tab_framework = st.tabs([
+    "🎯 Cockpit", "📊 Positions", "⚡ Risk", "📈 Performance", "🔬 Thesis Monitor", "⚙️ System & Data", "🔄 Full Cycle Framework"
 ])
 
 
@@ -1056,75 +1056,30 @@ tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system = st.tabs
 # TAB 1 — COCKPIT
 # ═══════════════════════════════════════════════════════════
 with tab_cockpit:
-    # ── ZONE 1: DECISION BOARD ──────────────────────────────────
-    # Ticker-grouped alert cards — one card per stock, all issues inside
-    all_alerts = danger_alerts + warning_alerts
-
-    # Group alerts by ticker
-    from collections import OrderedDict
-    alerts_by_ticker = OrderedDict()
-    for a in all_alerts:
-        t = a["ticker"]
-        if t not in alerts_by_ticker:
-            alerts_by_ticker[t] = []
-        alerts_by_ticker[t].append(a)
-
-    if alerts_by_ticker:
-        n_danger = len(danger_alerts)
-        n_warn = len(warning_alerts)
-        summary_color = "#dc2626" if n_danger else "#d97706"
-        summary_bg = "rgba(239,68,68,.06)" if n_danger else "rgba(245,158,11,.05)"
-        summary_border = "#ef4444" if n_danger else "#f59e0b"
-        summary_icon = "🚨" if n_danger else "⚡"
-        parts = []
-        if n_danger:
-            parts.append(f"{n_danger} hard alert{'s' if n_danger > 1 else ''}")
-        if n_warn:
-            parts.append(f"{n_warn} watch item{'s' if n_warn > 1 else ''}")
-        summary_text = " · ".join(parts) + f" across {len(alerts_by_ticker)} position{'s' if len(alerts_by_ticker) > 1 else ''}"
-
-        cards_html = ""
-        for ticker, t_alerts in alerts_by_ticker.items():
-            has_danger = any(a["level"] == "danger" for a in t_alerts)
-            card_border = "#ef4444" if has_danger else "#f59e0b"
-            card_bg = "rgba(239,68,68,.03)" if has_danger else "rgba(245,158,11,.03)"
-            rows = ""
-            for a in t_alerts:
-                if a["level"] == "danger":
-                    badge_cls = "badge-red"
-                    stripe = "#ef4444"
-                else:
-                    badge_cls = "badge-amber"
-                    stripe = "#f59e0b"
-                rows += (
-                    f'<div style="display:flex;align-items:center;gap:8px;padding:4px 0;'
-                    f'border-top:1px solid #f0f0f0;margin-top:4px">'
-                    f'<div style="width:3px;height:16px;border-radius:2px;background:{stripe};flex-shrink:0"></div>'
-                    f'<span style="font-size:12px;color:#444;flex:1">{a["msg"]}</span>'
-                    f'<span class="badge {badge_cls}">{a["type"]}</span>'
-                    f'</div>'
-                )
-            cards_html += (
-                f'<div style="background:{card_bg};border:1px solid {card_border};border-radius:8px;'
-                f'padding:10px 14px;margin:4px 0">'
-                f'<div style="font-weight:700;font-size:14px;color:#1a1a1a;margin-bottom:2px">{ticker}</div>'
-                f'{rows}'
-                f'</div>'
-            )
-
+    # Alert banner
+    if danger_alerts:
+        html = "".join(
+            f'<div style="padding:5px 12px;font-size:13px"><span class="dot danger-dot"></span>'
+            f'<strong>{a["ticker"]}</strong> — {a["msg"]}'
+            f'<span class="badge badge-red" style="float:right">{a["type"]}</span></div>'
+            for a in danger_alerts
+        )
         st.markdown(
-            f'<div style="background:{summary_bg};border:1px solid {summary_border};border-radius:10px;'
-            f'padding:10px 14px;margin-bottom:12px">'
-            f'<div style="font-weight:700;color:{summary_color};font-size:14px;margin-bottom:8px">'
-            f'{summary_icon} Decision Board — {summary_text}</div>'
-            f'{cards_html}</div>',
-            unsafe_allow_html=True)
-    else:
+            f'<div style="background:rgba(239,68,68,.06);border:1px solid #ef4444;border-radius:10px;padding:8px 4px;margin-bottom:12px">'
+            f'<div style="padding:4px 12px;font-weight:700;color:#dc2626;font-size:14px">🚨 {len(danger_alerts)} Hard Alert(s)</div>'
+            f'{html}</div>', unsafe_allow_html=True)
+
+    if warning_alerts:
+        html = "".join(
+            f'<div style="padding:4px 12px;font-size:12px"><span class="dot warning-dot"></span>'
+            f'<strong>{a["ticker"]}</strong> — {a["msg"]}'
+            f'<span class="badge badge-amber" style="float:right">{a["type"]}</span></div>'
+            for a in warning_alerts
+        )
         st.markdown(
-            '<div style="background:#eaf7ed;border:1px solid #86efac;border-radius:10px;'
-            'padding:10px 16px;margin-bottom:12px;color:#216c30;font-weight:600">'
-            '✅ All clear — no action items. All positions within parameters.</div>',
-            unsafe_allow_html=True)
+            f'<div style="background:rgba(245,158,11,.05);border:1px solid #f59e0b;border-radius:10px;padding:6px 4px;margin-bottom:12px">'
+            f'<div style="padding:4px 12px;font-weight:600;color:#d97706;font-size:13px">⚡ {len(warning_alerts)} Watch Item(s)</div>'
+            f'{html}</div>', unsafe_allow_html=True)
 
     # Live price badge
     if has_live:
@@ -1166,51 +1121,62 @@ with tab_cockpit:
 
     st.divider()
 
-    # ── ZONE 2: MARKET CONTEXT ──────────────────────────────────
-    # Tactical Ladder (left 60%) | Nifty chart (right 40%)
-    col_left, col_right = st.columns([1.5, 1])
-
-    with col_right:
-        # Nifty vs 200 EMA chart — moved here so Market Context is self-contained
-        if nifty and nifty.get("chart") is not None:
-            st.markdown("#### 📈 Nifty 50 vs 200 EMA")
-            st.caption("Tactical Ladder trigger zones — 120 trading days")
-            cdf = nifty["chart"]
-            fig_nifty_ck = go.Figure()
-            fig_nifty_ck.add_trace(go.Scatter(
-                x=cdf["Date"], y=cdf["Close"], mode='lines',
-                name='Nifty 50', line=dict(color="#355ec9", width=2),
-                hovertemplate='%{x}<br>Nifty: %{y:,.0f}<extra></extra>',
-            ))
-            fig_nifty_ck.add_trace(go.Scatter(
-                x=cdf["Date"], y=cdf["EMA200"], mode='lines',
-                name='200 EMA', line=dict(color="#eb6834", width=2, dash='dash'),
-                hovertemplate='%{x}<br>200 EMA: %{y:,.0f}<extra></extra>',
-            ))
-            for tier in LADDER_TIERS[:3]:
-                trigger = nifty["ema200"] * (1 + tier["threshold"] / 100)
-                fig_nifty_ck.add_hline(y=trigger, line_dash="dot", line_color="#c83b3b",
-                                        line_width=1, opacity=0.4,
-                                        annotation_text=f"T{tier['tier']} ({tier['threshold']}%)",
-                                        annotation_position="left",
-                                        annotation_font_size=9, annotation_font_color="#999")
-            fig_nifty_ck.update_layout(
-                height=320, margin=dict(l=0, r=0, t=10, b=10),
-                xaxis=dict(showgrid=False, title=None),
-                yaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None),
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                showlegend=True,
-                dragmode="pan",
-            )
-            st.plotly_chart(fig_nifty_ck, use_container_width=True,
-                            config={"scrollZoom": True, "displayModeBar": True,
-                                    "modeBarButtonsToRemove": ["select2d", "lasso2d"],
-                                    "displaylogo": False})
-        else:
-            st.info("Nifty data unavailable — install yfinance for live chart.")
+    # Two columns: Action Queue + Sector Allocation
+    col_left, col_right = st.columns([1.3, 1])
 
     with col_left:
+        st.markdown("#### 🚨 Action Queue")
+        st.caption("Exception-first view — items that need your decision")
+        all_alerts = danger_alerts + warning_alerts
+        if all_alerts:
+            for a in all_alerts:
+                dot_cls = "danger-dot" if a["level"] == "danger" else "warning-dot"
+                badge_cls = "badge-red" if a["level"] == "danger" else "badge-amber"
+                st.markdown(
+                    f'<div class="action-card">'
+                    f'<div><span class="dot {dot_cls}"></span><strong>{a["ticker"]}</strong><br/>'
+                    f'<small style="color:#667085">{a["msg"]}</small></div>'
+                    f'<span class="badge {badge_cls}">{a["type"]}</span></div>',
+                    unsafe_allow_html=True)
+        else:
+            st.success("No action items — all positions within parameters.")
+
+    with col_right:
+        st.markdown("#### Sector Allocation")
+        st.caption("By current portfolio value")
+        sector_vals = {}
+        for p in positions:
+            sector_vals[p["sector"]] = sector_vals.get(p["sector"], 0) + p["current_value"]
+        sectors_sorted = sorted(sector_vals.items(), key=lambda x: x[1], reverse=True)
+
+        fig_sector = go.Figure()
+        names = [s[0] for s in sectors_sorted]
+        vals = [s[1] for s in sectors_sorted]
+        pcts = [v / total_value * 100 for v in vals]
+        colors = SECTOR_COLORS[:len(names)]
+
+        fig_sector.add_trace(go.Bar(
+            y=names[::-1], x=pcts[::-1],
+            orientation='h',
+            marker_color=colors[:len(names)][::-1],
+            text=[f"{p:.1f}%" for p in pcts[::-1]],
+            textposition='outside',
+            hovertemplate='%{y}: %{x:.1f}%<extra></extra>',
+        ))
+        fig_sector.update_layout(
+            height=280, margin=dict(l=0, r=40, t=10, b=10),
+            xaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None, showticklabels=False),
+            yaxis=dict(showgrid=False, title=None),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_sector, use_container_width=True)
+
+    st.divider()
+
+    # Market / Deployment State + Equity Curve
+    md_left, md_right = st.columns(2)
+
+    with md_left:
         st.markdown("#### 📡 Market / Deployment State")
         st.caption("Dual-Asset Tactical Ladder — rules-based market engine")
 
@@ -1461,39 +1427,42 @@ with tab_cockpit:
             st.warning("⚠️ Could not fetch Nifty 50 data — check yfinance connection.")
             st.caption("The Tactical Ladder requires live Nifty 50 price and 200 EMA.")
 
-    st.divider()
-
-    # ── ZONE 3: COMPOSITION ─────────────────────────────────────
-    _sec_l, _sec_r = st.columns([1.5, 1])
-    with _sec_r:
-        st.markdown("#### Sector Allocation")
-        st.caption("By current portfolio value")
-        sector_vals = {}
-        for p in positions:
-            sector_vals[p["sector"]] = sector_vals.get(p["sector"], 0) + p["current_value"]
-        sectors_sorted = sorted(sector_vals.items(), key=lambda x: x[1], reverse=True)
-
-        fig_sector = go.Figure()
-        names = [s[0] for s in sectors_sorted]
-        vals = [s[1] for s in sectors_sorted]
-        pcts = [v / total_value * 100 for v in vals]
-        colors = SECTOR_COLORS[:len(names)]
-
-        fig_sector.add_trace(go.Bar(
-            y=names[::-1], x=pcts[::-1],
-            orientation='h',
-            marker_color=colors[:len(names)][::-1],
-            text=[f"{p:.1f}%" for p in pcts[::-1]],
-            textposition='outside',
-            hovertemplate='%{y}: %{x:.1f}%<extra></extra>',
-        ))
-        fig_sector.update_layout(
-            height=280, margin=dict(l=0, r=40, t=10, b=10),
-            xaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None, showticklabels=False),
-            yaxis=dict(showgrid=False, title=None),
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        )
-        st.plotly_chart(fig_sector, use_container_width=True)
+    with md_right:
+        # Nifty vs 200 EMA chart
+        if nifty and nifty.get("chart") is not None:
+            st.markdown("#### 📈 Nifty 50 vs 200 EMA")
+            st.caption("Tactical Ladder trigger zones — 120 trading days")
+            cdf = nifty["chart"]
+            fig_nifty = go.Figure()
+            fig_nifty.add_trace(go.Scatter(
+                x=cdf["Date"], y=cdf["Close"], mode='lines',
+                name='Nifty 50', line=dict(color="#355ec9", width=2),
+                hovertemplate='%{x}<br>Nifty: %{y:,.0f}<extra></extra>',
+            ))
+            fig_nifty.add_trace(go.Scatter(
+                x=cdf["Date"], y=cdf["EMA200"], mode='lines',
+                name='200 EMA', line=dict(color="#eb6834", width=2, dash='dash'),
+                hovertemplate='%{x}<br>200 EMA: %{y:,.0f}<extra></extra>',
+            ))
+            # Add tier trigger lines
+            for tier in LADDER_TIERS[:3]:  # Show T1-T3 lines
+                trigger = nifty["ema200"] * (1 + tier["threshold"] / 100)
+                fig_nifty.add_hline(y=trigger, line_dash="dot", line_color="#c83b3b",
+                                    line_width=1, opacity=0.4,
+                                    annotation_text=f"T{tier['tier']} ({tier['threshold']}%)",
+                                    annotation_position="left",
+                                    annotation_font_size=9, annotation_font_color="#999")
+            fig_nifty.update_layout(
+                height=300, margin=dict(l=0, r=0, t=10, b=10),
+                xaxis=dict(showgrid=False, title=None),
+                yaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                showlegend=True,
+            )
+            st.plotly_chart(fig_nifty, use_container_width=True)
+        else:
+            st.info("Nifty data unavailable — install yfinance for live chart.")
 
     # Portfolio Equity Curve — full width below
     st.markdown("#### 📈 Portfolio Equity Curve")
@@ -3303,6 +3272,183 @@ with tab_system:
     with col_r2:
         st.caption("Data refreshes automatically every 60 seconds. Prices sync every 30 min during market hours. "
                     "Announcements scan hourly.")
+
+
+# ═══════════════════════════════════════════════════════════
+# TAB 7 — FULL CYCLE FRAMEWORK
+# ═══════════════════════════════════════════════════════════
+with tab_framework:
+    st.markdown("## 🔄 Full Cycle Tactical Framework")
+    st.markdown("*Complete deploy-and-harvest system for the tactical cash reserve*")
+    st.divider()
+
+    # ── Capital Architecture ──
+    st.markdown("### 🏗️ Capital Architecture")
+    arch_cols = st.columns(3)
+    arch_items = [
+        ("Core NiftyBees", "35%", "Large-cap anchor via index ETF"),
+        ("Core Nifty Midcap 150", "25%", "Growth anchor via midcap ETF"),
+        ("Tactical Cash Reserve", "40%", "Liquid/arb funds ~6.5% p.a. — deployed on dips"),
+    ]
+    for i, (name, pct, desc) in enumerate(arch_items):
+        with arch_cols[i]:
+            st.metric(label=name, value=pct)
+            st.caption(desc)
+
+    st.divider()
+
+    # ── The Cycle ──
+    st.markdown("### 🔁 The Cycle")
+    st.markdown("""
+    ```
+    ┌─────────────────────────────────────────────────────┐
+    │                  Nifty 200-EMA                      │
+    │                                                     │
+    │   ABOVE EMA ──── HARVEST ZONE ───── H1 → H4        │
+    │       │          (book profits,                     │
+    │       │           trail stops)                      │
+    │       │                                             │
+    │  ═════╪══════════════ EMA LINE ═══════════════════  │
+    │       │                                             │
+    │       │                                             │
+    │   BELOW EMA ──── DEPLOY ZONE ───── T1 → T5         │
+    │                  (buy the dip,                      │
+    │                   fear = opportunity)               │
+    └─────────────────────────────────────────────────────┘
+    ```
+    """)
+
+    st.divider()
+
+    # ── Deployment Ladder ──
+    st.markdown("### 📉 Deployment Ladder (Below 200 EMA)")
+    st.markdown("Deploy tactical cash in 5 tranches as Nifty falls further below its 200 EMA.")
+
+    # Compute current EMA distance for context
+    ema_dist = D.get("ema_dist")
+    if ema_dist is not None:
+        st.info(f"**Current Nifty distance from 200 EMA: {ema_dist:+.1f}%**")
+
+    deploy_data = []
+    for t in LADDER_TIERS:
+        base = t["deploy_pct"]
+        row = {
+            "Tier": f"T{t['tier']}",
+            "Label": t["label"],
+            "EMA Threshold": f"{t['threshold']:+.0f}%",
+            "Breadth ≤": f"{t['breadth_max']}%",
+            "Base Deploy": f"{base}%",
+            "Fear 2/3 (1.5×)": f"{base * 1.5:.0f}%",
+            "Fear 3/3 (2×)": f"{base * 2:.0f}%",
+        }
+        deploy_data.append(row)
+
+    deploy_df = pd.DataFrame(deploy_data)
+    st.dataframe(deploy_df, use_container_width=True, hide_index=True)
+
+    st.markdown("""
+    **Dual-condition gate**: Both EMA distance AND breadth must confirm before deploying.
+    Breadth = % of Nifty 200 stocks above their own 200 DMA.
+    """)
+
+    st.divider()
+
+    # ── Fear Gauge Modifier ──
+    st.markdown("### 😨 Fear Gauge Modifier")
+    st.markdown("Three independent fear signals — each is binary ON/OFF:")
+
+    fear_cols = st.columns(3)
+    fear_gauges = [
+        ("MOVE Index", "> 120", "US rates volatility → global risk-off"),
+        ("India VIX", "> 20", "Domestic implied volatility spike"),
+        ("Credit Stress", "Spread > 1σ", "IG-Govt spread widens — credit fear"),
+    ]
+    for i, (name, trigger, desc) in enumerate(fear_gauges):
+        with fear_cols[i]:
+            st.markdown(f"**{name}**")
+            st.markdown(f"Trigger: `{trigger}`")
+            st.caption(desc)
+
+    st.markdown("""
+    | Confirmations | Multiplier | Effective Deploy | Early-Fire |
+    |:---:|:---:|:---:|:---:|
+    | 0 or 1 of 3 | 1× | 8% per tier | — |
+    | 2 of 3 | 1.5× | 12% per tier | — |
+    | 3 of 3 (Triple) | 2× | 16% per tier | +1% early |
+    """)
+
+    st.caption("Triple confirmation also fires the next tier 1% early (e.g., T2 at −9% instead of −10%)")
+
+    st.divider()
+
+    # ── Harvest Ladder ──
+    st.markdown("### 📈 Harvest Ladder (Above 200 EMA)")
+    st.markdown("Book profits systematically as Nifty rises above its 200 EMA.")
+
+    harvest_data = [
+        {"Tier": "H1", "Trigger": "+5% above EMA", "Action": "Activate trailing stops", "Book %": "—",
+         "Basis": "Median rally off 200 EMA ≈ 8-12%. Trail protects gains if momentum fades."},
+        {"Tier": "H2", "Trigger": "+10% above EMA", "Action": "Book 25% of tactical", "Book %": "25%",
+         "Basis": "75th-pctl rally from EMA. Historically only ~40% of rallies sustain past +10%."},
+        {"Tier": "H3", "Trigger": "+15% above EMA", "Action": "Book 50% of tactical", "Book %": "50%",
+         "Basis": "90th-pctl extension. Mean-reversion risk rises sharply."},
+        {"Tier": "H4", "Trigger": "+20% above EMA", "Action": "Book 75% of tactical", "Book %": "75%",
+         "Basis": "97th-pctl — extreme overextension. Rare; preserve capital."},
+    ]
+    harvest_df = pd.DataFrame(harvest_data)
+    st.dataframe(harvest_df, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Complacency Modifier ──
+    st.markdown("### 😴 Complacency Modifier")
+    st.markdown("When fear gauges show extreme calm during extended rallies, accelerate harvesting:")
+
+    st.markdown("""
+    | Condition | Rule |
+    |:---|:---|
+    | VIX < 12 **and** Nifty +10%+ above EMA | Accelerate harvest by 1 tier (e.g., at H2 act as H3) |
+    | All 3 gauges calm **and** +15%+ above EMA | Book 75% immediately (jump to H4 action) |
+    """)
+
+    st.caption("Complacency = low VIX + extended rally. This is when markets are most vulnerable to sharp reversals.")
+
+    st.divider()
+
+    # ── Framework Rules Summary ──
+    st.markdown("### 📋 Framework Rules Summary")
+
+    with st.expander("🔑 Core Rules", expanded=True):
+        st.markdown("""
+        1. **Never deploy above the 200 EMA** — above EMA is harvest territory
+        2. **Never harvest below the 200 EMA** — below EMA is deployment territory
+        3. **Dual-condition gating** — both EMA distance AND breadth must confirm before deploying
+        4. **Fear amplifies deployment** — more fear signals → bigger tranches + earlier triggers
+        5. **Complacency accelerates harvest** — calm gauges during rallies → take profits faster
+        6. **25% minimum cash floor** — never deploy more than 75% of tactical reserve
+        7. **Trail stops on all tactical positions** once H1 is reached
+        """)
+
+    with st.expander("⚠️ Override Conditions"):
+        st.markdown("""
+        - **Thesis breach** on any position → exit regardless of cycle position
+        - **Concentration > 15%** in any single name → trim to limit
+        - **Sector concentration > 30%** → rebalance across sectors
+        - **Stop-loss hit** → exit at stop, no averaging down
+        """)
+
+    with st.expander("📊 Historical Basis"):
+        st.markdown("""
+        Based on Nifty 50 data (2005–2024):
+
+        - **Median drawdown from 200 EMA**: −12% (supports T1–T3 as primary deploy zone)
+        - **75th percentile drawdown**: −18% (T4 territory — happens ~25% of corrections)
+        - **95th percentile drawdown**: −30%+ (beyond T5 — GFC/COVID-level, ~5% of events)
+        - **Median rally above 200 EMA**: +8–12% (H1 activation zone)
+        - **Time below EMA per episode**: median 45 trading days, mean 65 days
+        - **Recovery to EMA**: median 30 trading days from bottom
+        - **VIX correlation**: corrections with VIX > 25 tend to be 1.5× deeper but recover faster
+        """)
 
 
 # ── Footer ──────────────────────────────────────────────────
