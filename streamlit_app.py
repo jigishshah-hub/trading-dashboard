@@ -840,6 +840,38 @@ def days_since(date_str):
         return None
 
 
+def _breadth_age(date_str):
+    """Label a manually-entered breadth reading with its date and how stale it is.
+
+    Breadth is entered by hand, so a date alone can't be told apart from a
+    broken feed. Count completed NSE sessions (Mon-Fri, holidays not modelled)
+    since the reading and say so explicitly.
+    """
+    if not date_str:
+        return "date unknown"
+    try:
+        d = datetime.fromisoformat(str(date_str)).date()
+    except Exception:
+        return str(date_str)
+
+    today = datetime.now().date()
+    # Today only counts as a completed session after the 15:30 IST close.
+    last_session = today if _is_weekday(today) and datetime.now().hour >= 16 else None
+    probe, sessions = today, 0
+    while probe > d:
+        if _is_weekday(probe) and (probe != today or last_session is not None):
+            sessions += 1
+        probe -= timedelta(days=1)
+
+    if sessions <= 0:
+        return f"{d:%d %b} · current"
+    return f"{d:%d %b} · {sessions} session{'s' if sessions > 1 else ''} old"
+
+
+def _is_weekday(d):
+    return d.weekday() < 5
+
+
 def sev_icon(tag):
     if tag == "thesis-threatening":
         return "🔴"
@@ -1030,6 +1062,57 @@ st.markdown("""
     .r-pos {background: #eaf7ed; color: #216c30;} .r-neg {background: #feecec; color: #a92e2e;}
     .stop-bar {height: 8px; border-radius: 4px; background: #eef1f5; overflow: hidden; margin: 4px 0;}
     .stop-fill {height: 100%; border-radius: 4px;}
+
+    /* ── Framework tab ─────────────────────────────────── */
+    .fw-h {font-size: 15px; font-weight: 700; letter-spacing: .01em; color: #111827;
+           margin: 26px 0 2px; display: flex; align-items: center; gap: 8px;}
+    .fw-h:first-child {margin-top: 4px;}
+    .fw-h .rule {flex: 1; height: 1px; background: #e5e7eb;}
+    .fw-sub {font-size: 12.5px; color: #6b7280; margin: 0 0 10px;}
+
+    .fw-card {background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 14px;}
+    .fw-card .k {font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #667085;}
+    .fw-card .v {font-size: 22px; font-weight: 800; line-height: 1.25; margin-top: 2px;}
+    .fw-card .d {font-size: 11.5px; color: #6b7280; margin-top: 3px;}
+
+    /* Cycle diagram */
+    .cyc {border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden;}
+    .cyc-band {padding: 12px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;}
+    .cyc-harvest {background: linear-gradient(90deg,#f0fdf4,#ffffff);}
+    .cyc-deploy  {background: linear-gradient(90deg,#fef2f2,#ffffff);}
+    .cyc-zone {font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;}
+    .cyc-note {font-size: 12px; color: #6b7280;}
+    .cyc-tiers {display: flex; gap: 5px; margin-left: auto; flex-wrap: wrap;}
+    .cyc-t {font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 5px;
+            background: #fff; border: 1px solid #e5e7eb; color: #6b7280;}
+    .cyc-t.on {border-color: transparent; color: #fff;}
+    .cyc-ema {display: flex; align-items: center; gap: 10px; padding: 7px 16px;
+              background: #f8f9fb; border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb;}
+    .cyc-ema .lbl {font-size: 11px; font-weight: 800; letter-spacing: .08em; color: #374151;
+                   white-space: nowrap;}
+    .cyc-ema .line {flex: 1; height: 0; border-top: 2px dashed #9ca3af;}
+    .cyc-ema .now {font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+                   white-space: nowrap;}
+
+    /* Framework tables */
+    .fw-scroll {overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 2px;}
+    .fw-tbl {width: 100%; min-width: 520px; border-collapse: separate; border-spacing: 0; font-size: 12.5px;
+             border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden;}
+    .fw-tbl th {background: #f8f9fb; color: #667085; font-size: 10.5px; font-weight: 700;
+                text-transform: uppercase; letter-spacing: .04em; text-align: left;
+                padding: 8px 12px; border-bottom: 1px solid #e5e7eb; white-space: nowrap;}
+    .fw-tbl td {padding: 9px 12px; border-bottom: 1px solid #f1f3f7; color: #1f2937;
+                vertical-align: middle;}
+    .fw-tbl tr:last-child td {border-bottom: none;}
+    .fw-tbl td.num, .fw-tbl th.num {text-align: right; font-variant-numeric: tabular-nums;}
+    .fw-tbl td.c, .fw-tbl th.c {text-align: center;}
+    .fw-tbl tr.on td {background: #fffbeb; font-weight: 600;}
+    .fw-tbl tr.done td {background: #fafafa; color: #9ca3af;}
+    .fw-tbl .tier {font-weight: 800; letter-spacing: .02em;}
+    .fw-tbl .why {font-size: 11.5px; color: #6b7280;}
+    .fw-here {display: inline-block; font-size: 9.5px; font-weight: 800; letter-spacing: .05em;
+              background: #f59e0b; color: #fff; padding: 1px 6px; border-radius: 4px;
+              margin-left: 6px; vertical-align: 1px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1167,9 +1250,8 @@ with tab_cockpit:
             # Breadth metrics row
             bm1, bm2 = st.columns(2)
             if breadth_1pct:
-                b1_color = "inverse" if breadth_1pct["pct_above"] < 50 else "normal"
                 bm1.metric("P&F 1% Breadth", f'{breadth_1pct["pct_above"]}%',
-                           delta=f'{breadth_1pct["date"]}', delta_color=b1_color)
+                           delta=_breadth_age(breadth_1pct["date"]), delta_color="off")
             elif breadth_yf:
                 b1_color = "inverse" if breadth_yf["pct_above"] < 50 else "normal"
                 bm1.metric("Breadth (yf)", f'{breadth_yf["pct_above"]}%',
@@ -1178,9 +1260,8 @@ with tab_cockpit:
             else:
                 bm1.metric("P&F 1%", "—", delta="unavailable")
             if breadth_025pct:
-                b025_color = "inverse" if breadth_025pct["pct_above"] < 50 else "normal"
                 bm2.metric("P&F 0.25%", f'{breadth_025pct["pct_above"]}%',
-                           delta=f'{breadth_025pct["date"]}', delta_color=b025_color)
+                           delta=_breadth_age(breadth_025pct["date"]), delta_color="off")
             else:
                 bm2.metric("P&F 0.25%", "—", delta="unavailable")
 
@@ -3391,147 +3472,180 @@ with tab_system:
 # TAB 7 — FULL CYCLE FRAMEWORK
 # ═══════════════════════════════════════════════════════════
 with tab_framework:
-    st.markdown("## 🔄 Full Cycle Tactical Framework")
-    st.markdown("*Complete deploy-and-harvest system for the tactical cash reserve*")
-    st.divider()
+    st.markdown("## Full Cycle Tactical Framework")
+    st.caption("Complete deploy-and-harvest system for the tactical cash reserve")
+
+    # Live context — drives the "you are here" markers below.
+    fw_pct = nifty["pct_from_ema"] if nifty else None
+    fw_bpct = breadth["pct_above"] if breadth else None
+
+    def _fw_head(title, sub=None):
+        st.markdown(f'<div class="fw-h">{title}<span class="rule"></span></div>', unsafe_allow_html=True)
+        if sub:
+            st.markdown(f'<div class="fw-sub">{sub}</div>', unsafe_allow_html=True)
 
     # ── Capital Architecture ──
-    st.markdown("### 🏗️ Capital Architecture")
+    _fw_head("Capital Architecture")
     arch_cols = st.columns(3)
-    arch_items = [
-        ("Core NiftyBees", "35%", "Large-cap anchor via index ETF"),
-        ("Core Nifty Midcap 150", "25%", "Growth anchor via midcap ETF"),
-        ("Tactical Cash Reserve", "40%", "Liquid/arb funds ~6.5% p.a. — deployed on dips"),
-    ]
-    for i, (name, pct, desc) in enumerate(arch_items):
+    for i, a in enumerate(CAPITAL_ARCH):
         with arch_cols[i]:
-            st.metric(label=name, value=pct)
-            st.caption(desc)
-
-    st.divider()
+            st.markdown(
+                f'<div class="fw-card"><div class="k">{a["name"]}</div>'
+                f'<div class="v">{a["pct"]}%</div>'
+                f'<div class="d">{a["desc"]}</div></div>', unsafe_allow_html=True)
 
     # ── The Cycle ──
-    st.markdown("### 🔁 The Cycle")
-    st.markdown("""
-    ```
-    ┌─────────────────────────────────────────────────────┐
-    │                  Nifty 200-EMA                      │
-    │                                                     │
-    │   ABOVE EMA ──── HARVEST ZONE ───── H1 → H4        │
-    │       │          (book profits,                     │
-    │       │           trail stops)                      │
-    │       │                                             │
-    │  ═════╪══════════════ EMA LINE ═══════════════════  │
-    │       │                                             │
-    │       │                                             │
-    │   BELOW EMA ──── DEPLOY ZONE ───── T1 → T5         │
-    │                  (buy the dip,                      │
-    │                   fear = opportunity)               │
-    └─────────────────────────────────────────────────────┘
-    ```
-    """)
+    _fw_head("The Cycle", "Which side of the 200 EMA you are on decides whether you deploy or harvest.")
 
-    st.divider()
+    if fw_pct is None:
+        now_html = '<span class="now" style="background:#eef1f5;color:#6b7280">Nifty unavailable</span>'
+    else:
+        _nb, _nc = ("#feecec", "#991b1b") if fw_pct < 0 else ("#eaf7ed", "#166534")
+        _nv = ("%+.2f" % fw_pct).replace("-", "−")
+        now_html = (f'<span class="now" style="background:{_nb};color:{_nc}">'
+                    f'Now {_nv}%</span>')
+
+    # Active tier markers
+    def _chip(name, active, color):
+        if active:
+            return f'<span class="cyc-t on" style="background:{color}">{name}</span>'
+        return f'<span class="cyc-t">{name}</span>'
+
+    h_levels = [("H1", 5), ("H2", 10), ("H3", 15), ("H4", 20)]
+    h_chips = "".join(
+        _chip(nm, fw_pct is not None and fw_pct >= lv, "#16a34a") for nm, lv in h_levels)
+    t_chips = "".join(
+        _chip(f'T{t["tier"]}', fw_pct is not None and fw_pct <= t["threshold"], "#dc2626")
+        for t in LADDER_TIERS)
+
+    st.markdown(
+        f'<div class="cyc">'
+        f'<div class="cyc-band cyc-harvest">'
+        f'<span class="cyc-zone" style="color:#166534">Harvest zone</span>'
+        f'<span class="cyc-note">Above EMA — book profits, trail stops</span>'
+        f'<span class="cyc-tiers">{h_chips}</span></div>'
+        f'<div class="cyc-ema"><span class="lbl">NIFTY 200 EMA</span>'
+        f'<span class="line"></span>{now_html}</div>'
+        f'<div class="cyc-band cyc-deploy">'
+        f'<span class="cyc-zone" style="color:#991b1b">Deploy zone</span>'
+        f'<span class="cyc-note">Below EMA — buy the dip, fear = opportunity</span>'
+        f'<span class="cyc-tiers">{t_chips}</span></div>'
+        f'</div>', unsafe_allow_html=True)
 
     # ── Deployment Ladder ──
-    st.markdown("### 📉 Deployment Ladder (Below 200 EMA)")
-    st.markdown("Deploy tactical cash in 5 tranches as Nifty falls further below its 200 EMA.")
+    _fw_head("Deployment Ladder",
+             "Deploy tactical cash in 5 tranches as Nifty falls further below its 200 EMA. "
+             "Both the EMA distance <em>and</em> breadth must confirm.")
 
-    # Compute current EMA distance for context
-    ema_dist = D.get("ema_dist")
-    if ema_dist is not None:
-        st.info(f"**Current Nifty distance from 200 EMA: {ema_dist:+.1f}%**")
-
-    deploy_data = []
+    rows = ""
     for t in LADDER_TIERS:
         base = t["deploy_pct"]
-        row = {
-            "Tier": f"T{t['tier']}",
-            "Label": t["label"],
-            "EMA Threshold": f"{t['threshold']:+.0f}%",
-            "Breadth ≤": f"{t['breadth_max']}%",
-            "Base Deploy": f"{base}%",
-            "Fear 2/3 (1.5×)": f"{base * 1.5:.0f}%",
-            "Fear 3/3 (2×)": f"{base * 2:.0f}%",
-        }
-        deploy_data.append(row)
+        ema_ok = fw_pct is not None and fw_pct <= t["threshold"]
+        br_ok = fw_bpct is not None and fw_bpct <= t["breadth_max"]
+        if ema_ok and br_ok:
+            cls, gate = " class=\"on\"", '<span style="color:#b45309;font-weight:700">Armed</span>'
+        elif ema_ok:
+            cls, gate = "", '<span style="color:#9ca3af">Breadth not confirmed</span>'
+        else:
+            cls, gate = "", '<span style="color:#c7cbd3">—</span>'
+        here = '<span class="fw-here">HERE</span>' if (ema_ok and br_ok) else ""
+        rows += (
+            f'<tr{cls}><td class="tier">T{t["tier"]}{here}</td>'
+            f'<td class="why">{t["label"].split("— ")[-1]}</td>'
+            f'<td class="num">{("%+.0f" % t["threshold"]).replace("-", chr(0x2212))}%</td>'
+            f'<td class="num">&le; {t["breadth_max"]}%</td>'
+            f'<td class="num">{base}%</td>'
+            f'<td class="num">{base * 1.5:.0f}%</td>'
+            f'<td class="num">{base * 2:.0f}%</td>'
+            f'<td class="c">{gate}</td></tr>')
 
-    deploy_df = pd.DataFrame(deploy_data)
-    st.dataframe(deploy_df, use_container_width=True, hide_index=True)
-
-    st.markdown("""
-    **Dual-condition gate**: Both EMA distance AND breadth must confirm before deploying.
-    Breadth = % of Nifty 200 stocks above their own 200 DMA.
-    """)
-
-    st.divider()
+    st.markdown(
+        f'<div class="fw-scroll"><table class="fw-tbl"><thead><tr>'
+        f'<th>Tier</th><th>Condition</th><th class="num">EMA</th><th class="num">Breadth</th>'
+        f'<th class="num">Base</th><th class="num">Fear 2/3</th><th class="num">Fear 3/3</th>'
+        f'<th class="c">Status</th></tr></thead><tbody>{rows}</tbody></table></div>',
+        unsafe_allow_html=True)
+    st.caption("Breadth = % of Nifty 200 stocks above their own 200 DMA. "
+               "Fear multipliers are 1.5× at two confirmations, 2× at three.")
 
     # ── Fear Gauge Modifier ──
-    st.markdown("### 😨 Fear Gauge Modifier")
-    st.markdown("Three independent fear signals — each is binary ON/OFF:")
+    _fw_head("Fear Gauge Modifier", "Three independent fear signals — each is binary ON/OFF.")
 
     fear_cols = st.columns(3)
-    fear_gauges = [
+    fear_gauges_def = [
         ("MOVE Index", "> 120", "US rates volatility → global risk-off"),
         ("India VIX", "> 20", "Domestic implied volatility spike"),
-        ("Credit Stress", "Spread > 1σ", "IG-Govt spread widens — credit fear"),
+        ("Credit Stress", "Spread > 1σ", "IG–Govt spread widens — credit fear"),
     ]
-    for i, (name, trigger, desc) in enumerate(fear_gauges):
+    for i, (name, trigger, desc) in enumerate(fear_gauges_def):
         with fear_cols[i]:
-            st.markdown(f"**{name}**")
-            st.markdown(f"Trigger: `{trigger}`")
-            st.caption(desc)
+            st.markdown(
+                f'<div class="fw-card"><div class="k">{name}</div>'
+                f'<div class="v" style="font-size:16px">{trigger}</div>'
+                f'<div class="d">{desc}</div></div>', unsafe_allow_html=True)
 
-    st.markdown("""
-    | Confirmations | Multiplier | Effective Deploy | Early-Fire |
-    |:---:|:---:|:---:|:---:|
-    | 0 or 1 of 3 | 1× | 8% per tier | — |
-    | 2 of 3 | 1.5× | 12% per tier | — |
-    | 3 of 3 (Triple) | 2× | 16% per tier | +1% early |
-    """)
-
-    st.caption("Triple confirmation also fires the next tier 1% early (e.g., T2 at −9% instead of −10%)")
-
-    st.divider()
+    fg_now = fear_gauges.get("signals_on", 0) if fear_gauges else None
+    fear_rows = ""
+    for label, n, mult, eff, early in [
+        ("0 or 1 of 3", (0, 1), "1×", "8% per tier", "—"),
+        ("2 of 3", (2,), "1.5×", "12% per tier", "—"),
+        ("3 of 3 (Triple)", (3,), "2×", "16% per tier", "+1% early"),
+    ]:
+        on = fg_now is not None and fg_now in n
+        here = '<span class="fw-here">NOW</span>' if on else ""
+        rcls = ' class="on"' if on else ''
+        fear_rows += (f'<tr{rcls}><td>{label}{here}</td>'
+                      f'<td class="c">{mult}</td><td class="c">{eff}</td>'
+                      f'<td class="c">{early}</td></tr>')
+    st.markdown(
+        f'<div class="fw-scroll"><table class="fw-tbl"><thead><tr><th>Confirmations</th><th class="c">Multiplier</th>'
+        f'<th class="c">Effective deploy</th><th class="c">Early-fire</th></tr></thead>'
+        f'<tbody>{fear_rows}</tbody></table></div>', unsafe_allow_html=True)
+    st.caption("Triple confirmation also fires the next tier 1% early — e.g. T2 at −9% instead of −10%.")
 
     # ── Harvest Ladder ──
-    st.markdown("### 📈 Harvest Ladder (Above 200 EMA)")
-    st.markdown("Book profits systematically as Nifty rises above its 200 EMA.")
+    _fw_head("Harvest Ladder", "Book profits systematically as Nifty rises above its 200 EMA.")
 
-    harvest_data = [
-        {"Tier": "H1", "Trigger": "+5% above EMA", "Action": "Activate trailing stops", "Book %": "—",
-         "Basis": "Median rally off 200 EMA ≈ 8-12%. Trail protects gains if momentum fades."},
-        {"Tier": "H2", "Trigger": "+10% above EMA", "Action": "Book 25% of tactical", "Book %": "25%",
-         "Basis": "75th-pctl rally from EMA. Historically only ~40% of rallies sustain past +10%."},
-        {"Tier": "H3", "Trigger": "+15% above EMA", "Action": "Book 50% of tactical", "Book %": "50%",
-         "Basis": "90th-pctl extension. Mean-reversion risk rises sharply."},
-        {"Tier": "H4", "Trigger": "+20% above EMA", "Action": "Book 75% of tactical", "Book %": "75%",
-         "Basis": "97th-pctl — extreme overextension. Rare; preserve capital."},
-    ]
-    harvest_df = pd.DataFrame(harvest_data)
-    st.dataframe(harvest_df, use_container_width=True, hide_index=True)
-
-    st.divider()
+    harvest_rows = ""
+    for tier, lvl, action, book, basis in [
+        ("H1", 5, "Activate trailing stops", "—",
+         "Median rally off 200 EMA ≈ 8–12%. Trail protects gains if momentum fades."),
+        ("H2", 10, "Book 25% of tactical", "25%",
+         "75th-pctl rally from EMA. Historically only ~40% of rallies sustain past +10%."),
+        ("H3", 15, "Book 50% of tactical", "50%",
+         "90th-pctl extension. Mean-reversion risk rises sharply."),
+        ("H4", 20, "Book 75% of tactical", "75%",
+         "97th-pctl — extreme overextension. Rare; preserve capital."),
+    ]:
+        on = fw_pct is not None and fw_pct >= lvl
+        here = '<span class="fw-here">HERE</span>' if on else ""
+        rcls = ' class="on"' if on else ''
+        harvest_rows += (
+            f'<tr{rcls}><td class="tier">{tier}{here}</td>'
+            f'<td class="num">+{lvl}%</td><td>{action}</td>'
+            f'<td class="num">{book}</td><td class="why">{basis}</td></tr>')
+    st.markdown(
+        f'<div class="fw-scroll"><table class="fw-tbl"><thead><tr><th>Tier</th><th class="num">Above EMA</th>'
+        f'<th>Action</th><th class="num">Book</th><th>Basis</th></tr></thead>'
+        f'<tbody>{harvest_rows}</tbody></table></div>', unsafe_allow_html=True)
 
     # ── Complacency Modifier ──
-    st.markdown("### 😴 Complacency Modifier")
-    st.markdown("When fear gauges show extreme calm during extended rallies, accelerate harvesting:")
-
-    st.markdown("""
-    | Condition | Rule |
-    |:---|:---|
-    | VIX < 12 **and** Nifty +10%+ above EMA | Accelerate harvest by 1 tier (e.g., at H2 act as H3) |
-    | All 3 gauges calm **and** +15%+ above EMA | Book 75% immediately (jump to H4 action) |
-    """)
-
-    st.caption("Complacency = low VIX + extended rally. This is when markets are most vulnerable to sharp reversals.")
-
-    st.divider()
+    _fw_head("Complacency Modifier",
+             "When fear gauges show extreme calm during extended rallies, accelerate harvesting.")
+    st.markdown(
+        '<div class="fw-scroll"><table class="fw-tbl"><thead><tr><th>Condition</th><th>Rule</th></tr></thead><tbody>'
+        '<tr><td>VIX &lt; 12 <strong>and</strong> Nifty +10%+ above EMA</td>'
+        '<td>Accelerate harvest by 1 tier (at H2, act as H3)</td></tr>'
+        '<tr><td>All 3 gauges calm <strong>and</strong> +15%+ above EMA</td>'
+        '<td>Book 75% immediately (jump to H4 action)</td></tr>'
+        '</tbody></table></div>', unsafe_allow_html=True)
+    st.caption("Complacency = low VIX + extended rally. This is when markets are most "
+               "vulnerable to sharp reversals.")
 
     # ── Framework Rules Summary ──
-    st.markdown("### 📋 Framework Rules Summary")
+    _fw_head("Framework Rules")
 
-    with st.expander("🔑 Core Rules", expanded=True):
+    with st.expander("Core rules", expanded=True):
         st.markdown("""
         1. **Never deploy above the 200 EMA** — above EMA is harvest territory
         2. **Never harvest below the 200 EMA** — below EMA is deployment territory
@@ -3542,7 +3656,7 @@ with tab_framework:
         7. **Trail stops on all tactical positions** once H1 is reached
         """)
 
-    with st.expander("⚠️ Override Conditions"):
+    with st.expander("Override conditions"):
         st.markdown("""
         - **Thesis breach** on any position → exit regardless of cycle position
         - **Concentration > 15%** in any single name → trim to limit
@@ -3550,7 +3664,7 @@ with tab_framework:
         - **Stop-loss hit** → exit at stop, no averaging down
         """)
 
-    with st.expander("📊 Historical Basis"):
+    with st.expander("Historical basis"):
         st.markdown("""
         Based on Nifty 50 data (2005–2024):
 
@@ -3562,7 +3676,6 @@ with tab_framework:
         - **Recovery to EMA**: median 30 trading days from bottom
         - **VIX correlation**: corrections with VIX > 25 tend to be 1.5× deeper but recover faster
         """)
-
 
 # ── Footer ──────────────────────────────────────────────────
 st.divider()
