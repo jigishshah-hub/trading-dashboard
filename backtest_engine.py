@@ -345,6 +345,25 @@ DEPOSIT_YIELD = 0.065        # p.a. on idle standby deposits AND the debt sleeve
 STCG_RATE = 0.20            # < 1 year, Indian equity/gold short-term capital gains
 LTCG_RATE = 0.125           # >= 1 year, long-term capital gains
 LTCG_DAYS = 365
+
+
+@dataclass
+class LedgerRow:
+    """One trade row in the unit ledger (Session 2 spec §2).
+
+    cycle_id is left empty by run_matrix; call annotate_cycles() afterwards
+    to fill it in from the detected cycle list.
+    """
+    date: date
+    cycle_id: str            # filled in by annotate_cycles()
+    tier: str                # allocation-matrix band name
+    fund: str                # "NIFTY" | "MIDCAP" | "GOLD"
+    side: str                # "BUY" | "SELL"
+    units: float
+    price: float
+    rupees: float
+    cum_units_fund: float    # sleeve.units immediately after this trade
+    avg_cost_per_unit_fund: float
 EQUITY_NIFTY_FRAC = 0.58    # equity is 58/42 Nifty/Midcap (the 35/25 core proportion)
 
 # Non-equity sleeve caps (fractions of base_ref) used to split the debt/gold
@@ -500,6 +519,12 @@ class _PriceSleeve:
             return
         self.lots.append(_Lot(rupees / px, px, d))
 
+    def avg_cost(self) -> float:
+        u = self.units
+        if u <= 1e-12:
+            return 0.0
+        return sum(l.cost * l.units for l in self.lots) / u
+
     def sell_to_value(self, target_val: float, px: float, d: date,
                       taxable: bool) -> tuple[float, float]:
         """Sell FIFO down to `target_val`. Returns (gross_proceeds, tax)."""
@@ -558,6 +583,9 @@ class MatrixResult:
     events: list[Event] = field(default_factory=list)
     tax_paid: float = 0.0
     cost_paid: float = 0.0
+    # Per-bar sleeve unit counts (populated when run_matrix receives a ledger list)
+    nifty_units: list[float] = field(default_factory=list)
+    mid_units: list[float] = field(default_factory=list)
     # Depletion (the headline risk numbers of the whole exercise):
     depletion_date: date | None = None
     depletion_dist: float | None = None
@@ -615,6 +643,7 @@ def run_matrix(
     tx_cost_bps: float = 0.0,
     tax: bool = False,
     ema_span: int = 200,
+    ledger: list | None = None,
 ) -> MatrixResult:
     """Allocation-matrix backtest on aligned daily series.
 
@@ -658,6 +687,19 @@ def run_matrix(
     gold_s.buy(d0_gold, gold[0], dates[0])
     debt_val = d0_debt
     reserve = rob * base_ref0
+
+    # Emit initial allocation rows so the ledger is complete from day 0.
+    if ledger is not None:
+        for _s, _px, _fn in ((nifty_s, nifty[0], "NIFTY"),
+                              (mid_s, midcap[0], "MIDCAP"),
+                              (gold_s, gold[0], "GOLD")):
+            if _s.units > 1e-12:
+                ledger.append(LedgerRow(
+                    date=dates[0], cycle_id="", tier="initial",
+                    fund=_fn, side="BUY",
+                    units=_s.units, price=_px, rupees=_s.units * _px,
+                    cum_units_fund=_s.units,
+                    avg_cost_per_unit_fund=_s.avg_cost()))
 
     eff_idx = 2                       # baseline band index
     pending_idx, pending_cnt = eff_idx, 0
@@ -748,25 +790,43 @@ def run_matrix(
                 cost = tax_amt = 0.0
 
                 # sells first (raise cash into reserve), then buys draw it down
-                for sleeve, px, tgt in ((nifty_s, px_n, tgt_n), (mid_s, px_m, tgt_m),
-                                        (gold_s, px_g, tgt_gold)):
+                _sell_iter = ((nifty_s, px_n, tgt_n, "NIFTY"),
+                              (mid_s, px_m, tgt_m, "MIDCAP"),
+                              (gold_s, px_g, tgt_gold, "GOLD"))
+                for sleeve, px, tgt, fname in _sell_iter:
                     cur = sleeve.value(px)
                     if tgt < cur:
                         proceeds, t = sleeve.sell_to_value(tgt, px, d, tax)
                         cost += cost_frac * proceeds
                         tax_amt += t
                         reserve += proceeds
+                        if ledger is not None and proceeds > 1e-9:
+                            ledger.append(LedgerRow(
+                                date=d, cycle_id="", tier=target_band.name,
+                                fund=fname, side="SELL",
+                                units=proceeds / px, price=px, rupees=proceeds,
+                                cum_units_fund=sleeve.units,
+                                avg_cost_per_unit_fund=sleeve.avg_cost()))
                 if tgt_debt < debt_val:
                     reserve += debt_val - tgt_debt
                     debt_val = tgt_debt
-                for sleeve, px, tgt in ((nifty_s, px_n, tgt_n), (mid_s, px_m, tgt_m),
-                                        (gold_s, px_g, tgt_gold)):
+                _buy_iter = ((nifty_s, px_n, tgt_n, "NIFTY"),
+                             (mid_s, px_m, tgt_m, "MIDCAP"),
+                             (gold_s, px_g, tgt_gold, "GOLD"))
+                for sleeve, px, tgt, fname in _buy_iter:
                     cur = sleeve.value(px)
                     if tgt > cur:
                         spend = tgt - cur
                         sleeve.buy(spend, px, d)
                         reserve -= spend
                         cost += cost_frac * spend
+                        if ledger is not None and spend > 1e-9:
+                            ledger.append(LedgerRow(
+                                date=d, cycle_id="", tier=target_band.name,
+                                fund=fname, side="BUY",
+                                units=spend / px, price=px, rupees=spend,
+                                cum_units_fund=sleeve.units,
+                                avg_cost_per_unit_fund=sleeve.avg_cost()))
                 if tgt_debt > debt_val:
                     reserve -= tgt_debt - debt_val
                     debt_val = tgt_debt
@@ -796,6 +856,9 @@ def run_matrix(
         res.gold.append(gold_s.value(px_g))
         res.debt.append(debt_val)
         res.reserve.append(reserve)
+        if ledger is not None:
+            res.nifty_units.append(nifty_s.units)
+            res.mid_units.append(mid_s.units)
 
     return res
 
