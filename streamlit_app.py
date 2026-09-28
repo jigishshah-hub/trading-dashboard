@@ -1134,8 +1134,8 @@ with c2:
                 unsafe_allow_html=True)
 
 # ── Tabs ────────────────────────────────────────────────────
-tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system, tab_framework = st.tabs([
-    "🎯 Cockpit", "📊 Positions", "⚡ Risk", "📈 Performance", "🔬 Thesis Monitor", "⚙️ System & Data", "🔄 Full Cycle Framework"
+tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system, tab_framework, tab_backtest = st.tabs([
+    "🎯 Cockpit", "📊 Positions", "⚡ Risk", "📈 Performance", "🔬 Thesis Monitor", "⚙️ System & Data", "🔄 Full Cycle Framework", "🧪 Backtest"
 ])
 
 

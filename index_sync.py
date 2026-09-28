@@ -34,17 +34,16 @@ SUPABASE_URL = "https://egfsjboyzajyemjqazot.supabase.co"
 # Credit stress (LQD/HYG) is derived in the app, not stored here.
 REQUIRED = ["^NSEI", "^INDIAVIX", "^MOVE"]
 
-# The deploy asset. Yahoo has no Nifty Midcap 150 index (^CRSMID returned
-# nothing), and the Midcap 150 ETFs only list from ~2019, which is too late
-# for a backtest starting with the 2015 breadth history. So probe candidates
-# in preference order and keep whatever returns usable history; the backtest
-# picks the longest series available and names it in its output.
+# The deploy asset. Yahoo has no ^CRSMID; the Nifty Midcap 150 index lists as
+# NIFTYMIDCAP150.NS (confirmed by Jigish). The rest stay as fallbacks in case
+# that symbol's history is shorter than the 2015 breadth series — the backtest
+# picks the longest usable series and names it in its output.
 MIDCAP_CANDIDATES = [
-    "^NSEMDCP50",       # Nifty Midcap 50 index
-    "^NSMIDCP",         # alternate Yahoo code for the same
-    "^CNXMID",          # Nifty Midcap 100
-    "NIFTYMIDCAP150.NS",
-    "MID150BEES.NS",    # Nippon Midcap 150 ETF (short history)
+    "NIFTYMIDCAP150.NS",  # Nifty Midcap 150 — preferred, matches the framework
+    "^NSEMDCP50",         # Nifty Midcap 50 index
+    "^NSMIDCP",           # alternate Yahoo code for the same
+    "^CNXMID",            # Nifty Midcap 100
+    "MID150BEES.NS",      # Nippon Midcap 150 ETF (short history)
     "MIDCAPETF.NS",
 ]
 
