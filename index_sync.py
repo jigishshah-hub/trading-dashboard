@@ -29,11 +29,26 @@ SUPABASE_URL = "https://egfsjboyzajyemjqazot.supabase.co"
 
 # Symbols the backtest needs.
 #   ^NSEI      Nifty 50 — drives the 200 EMA distance (the ladder's primary gate)
-#   ^CRSMID    Nifty Midcap 150 — the asset tactical cash deploys into
 #   ^INDIAVIX  India VIX — fear gauge 2
 #   ^MOVE      ICE BofA MOVE index — fear gauge 1
 # Credit stress (LQD/HYG) is derived in the app, not stored here.
-SYMBOLS = ["^NSEI", "^CRSMID", "^INDIAVIX", "^MOVE"]
+REQUIRED = ["^NSEI", "^INDIAVIX", "^MOVE"]
+
+# The deploy asset. Yahoo has no Nifty Midcap 150 index (^CRSMID returned
+# nothing), and the Midcap 150 ETFs only list from ~2019, which is too late
+# for a backtest starting with the 2015 breadth history. So probe candidates
+# in preference order and keep whatever returns usable history; the backtest
+# picks the longest series available and names it in its output.
+MIDCAP_CANDIDATES = [
+    "^NSEMDCP50",       # Nifty Midcap 50 index
+    "^NSMIDCP",         # alternate Yahoo code for the same
+    "^CNXMID",          # Nifty Midcap 100
+    "NIFTYMIDCAP150.NS",
+    "MID150BEES.NS",    # Nippon Midcap 150 ETF (short history)
+    "MIDCAPETF.NS",
+]
+
+SYMBOLS = REQUIRED + MIDCAP_CANDIDATES
 
 # Backfill floor. Breadth history in Supabase starts 2015-06-01; pulling a
 # little earlier lets the 200 EMA warm up before the first backtested day.
@@ -120,9 +135,15 @@ def main():
         print(f"  {sym}: {n} rows  ({df.index[0].date()} -> {df.index[-1].date()})")
 
     print(f"done — {total} rows upserted")
+
+    # Only a missing REQUIRED symbol is a failure. The midcap candidates are a
+    # probe: several are expected to return nothing, and that must not fail the
+    # run or mask the rows that did land.
+    missing_required = [s for s in failed if s in REQUIRED]
     if failed:
-        # Surface partial failure to the workflow without losing what did land.
-        sys.exit(f"symbols with no data: {', '.join(failed)}")
+        print(f"no data: {', '.join(failed)}")
+    if missing_required:
+        sys.exit(f"REQUIRED symbols returned no data: {', '.join(missing_required)}")
 
 
 if __name__ == "__main__":
