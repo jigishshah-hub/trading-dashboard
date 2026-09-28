@@ -3744,28 +3744,44 @@ with tab_backtest:
         return rows
 
     @st.cache_data(ttl=900)
-    def _available_symbols():
-        sb = _sb()
-        rows = sb.table("index_history").select("symbol").limit(20000).execute().data or []
-        return sorted({r["symbol"] for r in rows})
+    def _symbol_coverage(_bust=0):
+        """Symbol inventory from a view.
 
-    MIDCAP_PREF = ["NIFTYMIDCAP150.NS", "^NSEMDCP50", "^NSMIDCP", "^CNXMID",
-                   "MID150BEES.NS", "MIDCAPETF.NS"]
-    MIDCAP_LABEL = {
-        "NIFTYMIDCAP150.NS": "Nifty Midcap 150",
-        "^NSEMDCP50": "Nifty Midcap 50 (proxy)",
-        "^NSMIDCP": "Nifty Midcap 50 (proxy)",
-        "^CNXMID": "Nifty Midcap 100 (proxy)",
-        "MID150BEES.NS": "Midcap 150 ETF (proxy)",
-        "MIDCAPETF.NS": "Midcap ETF (proxy)",
-        "^NSEI": "Nifty 50 (fallback — no midcap series loaded)",
-    }
+        A plain select on index_history is capped at 1000 rows by PostgREST,
+        so counting symbols from raw rows can miss whole series. The view
+        aggregates server-side and returns one row per symbol.
+        """
+        sb = _sb()
+        rows = sb.table("index_history_symbols").select("*").execute().data or []
+        return {r["symbol"]: {"bars": int(r["bars"]),
+                              "first": datetime.fromisoformat(r["first_bar"]).date(),
+                              "last": datetime.fromisoformat(r["last_bar"]).date()}
+                for r in rows}
+
+    _bust = st.session_state.get("bt_bust", 0)
+    if st.button("↻ Refresh data", key="bt_refresh",
+                 help="Clear cached series after a fresh Index History Sync run"):
+        st.cache_data.clear()
+        st.session_state["bt_bust"] = _bust + 1
+        st.rerun()
 
     try:
-        have = _available_symbols()
+        cover = _symbol_coverage(_bust)
     except Exception as e:
-        have = []
+        cover = {}
         st.error(f"Could not reach index_history: {e}")
+    have = sorted(cover)
+
+    MIDCAP_LABEL = {
+        "NIFTYMIDCAP150.NS": "Nifty Midcap 150 — the framework's actual asset",
+        "^NSEMDCP50": "Nifty Midcap 50 — proxy",
+        "^NSMIDCP": "Nifty Midcap 50 — proxy",
+        "^CNXMID": "Nifty Midcap 100 — proxy",
+        "MID150BEES.NS": "Midcap 150 ETF — proxy",
+        "MIDCAPETF.NS": "Midcap ETF — proxy",
+        "^NSEI": "Nifty 50 — fallback, not a midcap series",
+    }
+
 
     # A guard flag, not st.stop(): st.stop() would abort the whole script run,
     # taking the footer and every later element with it, just because this one
@@ -3774,11 +3790,31 @@ with tab_backtest:
     if not _bt_ok:
         st.warning(
             "No Nifty history in `index_history` yet. Run the **Index History Sync** "
-            "workflow with `backfill = true` to seed it, then reload."
+            "workflow with `backfill = true` to seed it, then hit Refresh data."
         )
 
     if _bt_ok:
-        mid_sym = next((s for s in MIDCAP_PREF if s in have), "^NSEI")
+        # The deploy asset is an explicit choice, not a silent default: the
+        # framework's own asset (Midcap 150) only lists from 2019, while the
+        # Midcap 50 proxies reach back to 2014. Picking the "correct" symbol
+        # automatically would quietly cut four years — including the 2018
+        # correction — off the backtest without saying so.
+        mid_opts = [s for s in MIDCAP_LABEL if s in cover and s != "^NSEI"]
+        mid_opts.sort(key=lambda s: cover[s]["first"])          # longest history first
+        mid_opts = [s for s in mid_opts if cover[s]["bars"] >= 250]
+        if not mid_opts:
+            mid_opts = ["^NSEI"]
+
+        def _mid_fmt(s):
+            c = cover.get(s, {})
+            return (f"{MIDCAP_LABEL.get(s, s)} · from {c.get('first')} "
+                    f"({c.get('bars', 0):,} bars)")
+
+        mid_sym = st.selectbox(
+            "Deploy asset — what tactical cash buys",
+            mid_opts, index=0, format_func=_mid_fmt, key="bt_midcap",
+            help="Longest history first. Midcap 150 is the framework's asset but "
+                 "only lists from 2019; the Midcap 50 proxies reach back to 2014.")
 
         # ── Controls ──
         c1, c2, c3, c4 = st.columns([1.1, 1, 1, 1.2])
@@ -3849,15 +3885,24 @@ with tab_backtest:
                               initial=bt_initial * 100_000)
 
         # ── Provenance ──
+        first_decision = series_dates[min(199, len(series_dates) - 1)]
         st.markdown(
             f'<div class="fw-sub">Deploy asset: <strong>{MIDCAP_LABEL.get(mid_sym, mid_sym)}</strong> '
             f'(<code>{mid_sym}</code>) · {len(series_dates):,} aligned bars · '
-            f'{series_dates[0]:%d %b %Y} → {series_dates[-1]:%d %b %Y} · '
-            f'breadth readings matched: {sum(1 for d in series_dates if d in b_by_date):,}'
+            f'series {series_dates[0]:%d %b %Y} → {series_dates[-1]:%d %b %Y} · '
+            f'first possible tier decision {first_decision:%d %b %Y} '
+            f'(200 bars warm the EMA) · '
+            f'breadth matched on {sum(1 for d in series_dates if d in b_by_date):,} bars'
             f'</div>', unsafe_allow_html=True)
         if mid_sym == "^NSEI":
             st.warning("No midcap series loaded — deploying into Nifty 50 instead. "
-                       "Re-run the Index History Sync backfill to pick up Midcap 150.")
+                       "Re-run the Index History Sync backfill, then hit Refresh data.")
+        if series_dates[0] > date(2016, 1, 1):
+            st.info(
+                f"This series only starts {series_dates[0]:%b %Y}, so the backtest "
+                f"misses 2015–2018. Pick a Midcap 50 proxy above for the full window, "
+                f"at the cost of using a different index than the framework specifies."
+            )
 
         # ── Headline ──
         m1, m2, m3, m4 = st.columns(4)
