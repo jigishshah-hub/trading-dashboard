@@ -846,6 +846,9 @@ def _breadth_age(date_str):
     Breadth is entered by hand, so a date alone can't be told apart from a
     broken feed. Count completed NSE sessions (Mon-Fri, holidays not modelled)
     since the reading and say so explicitly.
+
+    Always evaluated in IST: the host clock is UTC, so a naive datetime.now()
+    would still read "before the close" for hours after the 15:30 IST close.
     """
     if not date_str:
         return "date unknown"
@@ -854,12 +857,13 @@ def _breadth_age(date_str):
     except Exception:
         return str(date_str)
 
-    today = datetime.now().date()
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    today = now_ist.date()
     # Today only counts as a completed session after the 15:30 IST close.
-    last_session = today if _is_weekday(today) and datetime.now().hour >= 16 else None
+    today_done = _is_weekday(today) and now_ist.hour >= 16
     probe, sessions = today, 0
     while probe > d:
-        if _is_weekday(probe) and (probe != today or last_session is not None):
+        if _is_weekday(probe) and (probe != today or today_done):
             sessions += 1
         probe -= timedelta(days=1)
 
@@ -1248,10 +1252,21 @@ with tab_cockpit:
                 f'</div>', unsafe_allow_html=True)
 
             # Breadth metrics row
+            def _breadth_stamp(col, date_str):
+                """Age line under a breadth tile. Rendered as its own caption
+                rather than st.metric(delta=...), which always draws an arrow."""
+                txt = _breadth_age(date_str)
+                stale = "session" in txt
+                col.markdown(
+                    f'<div style="font-size:11px;margin-top:-8px;'
+                    f'color:{"#b45309" if stale else "#6b7280"};'
+                    f'font-weight:{"600" if stale else "400"}">{txt}</div>',
+                    unsafe_allow_html=True)
+
             bm1, bm2 = st.columns(2)
             if breadth_1pct:
-                bm1.metric("P&F 1% Breadth", f'{breadth_1pct["pct_above"]}%',
-                           delta=_breadth_age(breadth_1pct["date"]), delta_color="off")
+                bm1.metric("P&F 1% Breadth", f'{breadth_1pct["pct_above"]}%')
+                _breadth_stamp(bm1, breadth_1pct["date"])
             elif breadth_yf:
                 b1_color = "inverse" if breadth_yf["pct_above"] < 50 else "normal"
                 bm1.metric("Breadth (yf)", f'{breadth_yf["pct_above"]}%',
@@ -1260,8 +1275,8 @@ with tab_cockpit:
             else:
                 bm1.metric("P&F 1%", "—", delta="unavailable")
             if breadth_025pct:
-                bm2.metric("P&F 0.25%", f'{breadth_025pct["pct_above"]}%',
-                           delta=_breadth_age(breadth_025pct["date"]), delta_color="off")
+                bm2.metric("P&F 0.25%", f'{breadth_025pct["pct_above"]}%')
+                _breadth_stamp(bm2, breadth_025pct["date"])
             else:
                 bm2.metric("P&F 0.25%", "—", delta="unavailable")
 
