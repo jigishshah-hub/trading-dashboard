@@ -8,9 +8,11 @@ import streamlit as st
 from supabase import create_client
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 import math
 import yfinance as yf
+
+import backtest_engine as bte
 
 # ── Config ──────────────────────────────────────────────────
 st.set_page_config(
@@ -3691,6 +3693,237 @@ with tab_framework:
         - **Recovery to EMA**: median 30 trading days from bottom
         - **VIX correlation**: corrections with VIX > 25 tend to be 1.5× deeper but recover faster
         """)
+
+
+
+# ═══════════════════════════════════════════════════════════
+# TAB 8 — BACKTEST
+# ═══════════════════════════════════════════════════════════
+with tab_backtest:
+    st.markdown("## Tactical Ladder Backtest")
+    st.caption("Replays the deploy-and-harvest rules over stored history. "
+               "Rules live in backtest_engine.py and are unit-tested separately.")
+
+    @st.cache_data(ttl=900)
+    def _load_series(symbol):
+        """Fetch one symbol's full history.
+
+        PostgREST caps a select at 1000 rows, so page explicitly — otherwise
+        an 11-year series silently becomes its first four years.
+        """
+        sb = _sb()
+        rows, step, start = [], 1000, 0
+        while True:
+            page = (sb.table("index_history")
+                      .select("bar_date, close")
+                      .eq("symbol", symbol)
+                      .order("bar_date")
+                      .range(start, start + step - 1)
+                      .execute().data or [])
+            rows.extend(page)
+            if len(page) < step:
+                break
+            start += step
+        return rows
+
+    @st.cache_data(ttl=900)
+    def _load_breadth(source="rzone_pnf_1pct"):
+        sb = _sb()
+        rows, step, start = [], 1000, 0
+        while True:
+            page = (sb.table("breadth_readings")
+                      .select("reading_date, breadth_pct")
+                      .eq("source", source)
+                      .order("reading_date")
+                      .range(start, start + step - 1)
+                      .execute().data or [])
+            rows.extend(page)
+            if len(page) < step:
+                break
+            start += step
+        return rows
+
+    @st.cache_data(ttl=900)
+    def _available_symbols():
+        sb = _sb()
+        rows = sb.table("index_history").select("symbol").limit(20000).execute().data or []
+        return sorted({r["symbol"] for r in rows})
+
+    MIDCAP_PREF = ["NIFTYMIDCAP150.NS", "^NSEMDCP50", "^NSMIDCP", "^CNXMID",
+                   "MID150BEES.NS", "MIDCAPETF.NS"]
+    MIDCAP_LABEL = {
+        "NIFTYMIDCAP150.NS": "Nifty Midcap 150",
+        "^NSEMDCP50": "Nifty Midcap 50 (proxy)",
+        "^NSMIDCP": "Nifty Midcap 50 (proxy)",
+        "^CNXMID": "Nifty Midcap 100 (proxy)",
+        "MID150BEES.NS": "Midcap 150 ETF (proxy)",
+        "MIDCAPETF.NS": "Midcap ETF (proxy)",
+        "^NSEI": "Nifty 50 (fallback — no midcap series loaded)",
+    }
+
+    try:
+        have = _available_symbols()
+    except Exception as e:
+        have = []
+        st.error(f"Could not reach index_history: {e}")
+
+    # A guard flag, not st.stop(): st.stop() would abort the whole script run,
+    # taking the footer and every later element with it, just because this one
+    # tab lacked data.
+    _bt_ok = "^NSEI" in have
+    if not _bt_ok:
+        st.warning(
+            "No Nifty history in `index_history` yet. Run the **Index History Sync** "
+            "workflow with `backfill = true` to seed it, then reload."
+        )
+
+    if _bt_ok:
+        mid_sym = next((s for s in MIDCAP_PREF if s in have), "^NSEI")
+
+        # ── Controls ──
+        c1, c2, c3, c4 = st.columns([1.1, 1, 1, 1.2])
+        with c1:
+            bt_start = st.date_input("Start", value=date(2015, 6, 1), key="bt_start")
+        with c2:
+            bt_initial = st.number_input("Initial (₹ lakh)", 1.0, 1000.0, 10.0, 1.0,
+                                         key="bt_initial")
+        with c3:
+            bt_breadth = st.checkbox("Breadth gate", value=True, key="bt_breadth",
+                                     help="Require breadth to confirm as well as EMA distance")
+        with c4:
+            bt_fear = st.checkbox("Fear multipliers", value=False, key="bt_fear",
+                                  help="India VIX + MOVE size tranches 1.5x / 2x")
+        bt_harvest = st.checkbox("Harvest ladder (book profits above the EMA)",
+                                 value=True, key="bt_harvest")
+
+        nifty_rows = _load_series("^NSEI")
+        mid_rows = _load_series(mid_sym) if mid_sym != "^NSEI" else nifty_rows
+        breadth_rows = _load_breadth()
+
+        n_by_date = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
+                     for r in nifty_rows}
+        m_by_date = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
+                     for r in mid_rows}
+        b_by_date = {datetime.fromisoformat(r["reading_date"]).date(): float(r["breadth_pct"])
+                     for r in breadth_rows}
+
+        # The ladder needs 200 bars of Nifty before the first decision, so start the
+        # series early and only *evaluate* from bt_start.
+        warm = 260
+        all_dates = sorted(d for d in n_by_date if d in m_by_date)
+        eval_from = bt_start
+        idx0 = next((i for i, d in enumerate(all_dates) if d >= eval_from), 0)
+        series_dates = all_dates[max(0, idx0 - warm):]
+
+        if len(series_dates) < 250:
+            st.warning(f"Only {len(series_dates)} aligned bars — not enough to warm a 200 EMA.")
+            st.stop()
+
+        fear_map = {}
+        if bt_fear:
+            vix = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
+                   for r in _load_series("^INDIAVIX")}
+            move = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
+                    for r in _load_series("^MOVE")}
+            for d in series_dates:
+                on = 0
+                if vix.get(d) is not None and vix.get(d, 0) >= 20:
+                    on += 1
+                if move.get(d) is not None and move.get(d, 0) >= 80:
+                    on += 1
+                fear_map[d] = on   # credit-stress gauge not stored; max 2 of 3 here
+
+        res = bte.run(
+            series_dates,
+            [n_by_date[d] for d in series_dates],
+            [m_by_date[d] for d in series_dates],
+            b_by_date,
+            initial=bt_initial * 100_000,
+            use_breadth=bt_breadth,
+            fear_signals=fear_map or None,
+            enable_harvest=bt_harvest,
+        )
+        bh = bte.buy_and_hold(series_dates,
+                              [n_by_date[d] for d in series_dates],
+                              [m_by_date[d] for d in series_dates],
+                              initial=bt_initial * 100_000)
+
+        # ── Provenance ──
+        st.markdown(
+            f'<div class="fw-sub">Deploy asset: <strong>{MIDCAP_LABEL.get(mid_sym, mid_sym)}</strong> '
+            f'(<code>{mid_sym}</code>) · {len(series_dates):,} aligned bars · '
+            f'{series_dates[0]:%d %b %Y} → {series_dates[-1]:%d %b %Y} · '
+            f'breadth readings matched: {sum(1 for d in series_dates if d in b_by_date):,}'
+            f'</div>', unsafe_allow_html=True)
+        if mid_sym == "^NSEI":
+            st.warning("No midcap series loaded — deploying into Nifty 50 instead. "
+                       "Re-run the Index History Sync backfill to pick up Midcap 150.")
+
+        # ── Headline ──
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Ladder CAGR", f"{res.cagr()*100:.2f}%")
+        m2.metric("Buy & hold CAGR", f"{bh.cagr()*100:.2f}%",
+                  delta=f"{(res.cagr()-bh.cagr())*100:+.2f} pp", delta_color="normal")
+        m3.metric("Final value", f"₹{res.final/100000:.2f}L")
+        m4.metric("Max drawdown", f"{res.max_drawdown()*100:.1f}%",
+                  delta=f"vs {bh.max_drawdown()*100:.1f}% B&H", delta_color="off")
+
+        # ── Equity curve ──
+        eq = pd.DataFrame({
+            "Date": res.dates,
+            "Tactical Ladder": res.equity,
+            "Buy & hold": bh.equity,
+        }).set_index("Date")
+        st.line_chart(eq, height=300)
+
+        # ── Deployment state over time ──
+        st.markdown('<div class="fw-h">Tactical cash vs deployed<span class="rule"></span></div>',
+                    unsafe_allow_html=True)
+        dep = pd.DataFrame({
+            "Date": res.dates,
+            "Cash": res.cash,
+            "Deployed": res.deployed,
+        }).set_index("Date")
+        st.area_chart(dep, height=220)
+
+        # ── Events ──
+        st.markdown('<div class="fw-h">Ladder events<span class="rule"></span></div>',
+                    unsafe_allow_html=True)
+        if not res.events:
+            st.info("No tier fired over this window with these settings.")
+        else:
+            ev = pd.DataFrame([{
+                "Date": e.d,
+                "Action": e.kind.title(),
+                "Tier": e.tier,
+                "EMA dist": f"{e.ema_dist:+.1f}%",
+                "Breadth": "—" if e.breadth is None else f"{e.breadth:.0f}%",
+                "Amount": "—" if e.amount == 0 else f"₹{e.amount:,.0f}",
+                "Mult": f"{e.multiplier:g}x" if e.kind == "deploy" else "—",
+                "Note": e.note,
+            } for e in res.events])
+            n_dep = sum(1 for e in res.events if e.kind == "deploy")
+            n_har = sum(1 for e in res.events if e.kind == "harvest")
+            st.caption(f"{len(res.events)} events — {n_dep} deploys, {n_har} harvests")
+            st.dataframe(ev, use_container_width=True, hide_index=True, height=320)
+
+        with st.expander("What this does and does not model"):
+            st.markdown(f"""
+            **Models:** dual-condition tier arming (EMA distance *and* breadth),
+            one fire per tier per cycle with re-arm on an EMA crossing, the 25%
+            cash floor against the original reserve, {bte.CASH_YIELD*100:.1f}% p.a.
+            on idle tactical cash, and the harvest ladder booking 25/50/75%.
+
+            **Does not model:** brokerage, STT, slippage, tracking error between
+            the index and a real ETF, dividends on the core sleeves, or taxes.
+            Returns are index price returns, so they understate a total-return
+            view. Fear gauges here use India VIX and MOVE only — the credit-stress
+            gauge is derived live in the Cockpit and is not stored historically,
+            so triple confirmation cannot fire in this backtest (max 2 of 3).
+
+            **Survivorship:** breadth is the stored P&F X-Percent series, so it
+            carries whatever construction Definedge used; it is not recomputed here.
+            """)
 
 # ── Footer ──────────────────────────────────────────────────
 st.divider()
