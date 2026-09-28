@@ -10,3 +10,4 @@ feedparser
 requests
 plotly
 yfinance
+streamlit
