@@ -1,0 +1,38 @@
+name: Index History Sync
+
+on:
+  # 4:00 PM IST (10:30 UTC), after NSE close and after the price snapshot job.
+  schedule:
+    - cron: "30 10 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: "Pull full history (run once to seed index_history)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  index-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements-actions.txt
+
+      - name: Sync index history
+        run: |
+          if [ "${{ github.event.inputs.backfill }}" = "true" ]; then
+            python index_sync.py --backfill
+          else
+            python index_sync.py
+          fi
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

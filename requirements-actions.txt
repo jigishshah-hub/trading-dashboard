@@ -1,4 +1,5 @@
-# GitHub Actions runtime — no Streamlit, no plotly, no yfinance
+# GitHub Actions runtime — no Streamlit, no plotly.
+# yfinance IS needed here: snapshot_prices.py and index_sync.py both import it.
 supabase
 feedparser
 requests
@@ -6,3 +7,4 @@ pandas
 beautifulsoup4
 gspread
 google-auth
+yfinance
