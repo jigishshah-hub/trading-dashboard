@@ -662,6 +662,7 @@ def run_matrix(
     eff_idx = 2                       # baseline band index
     pending_idx, pending_cnt = eff_idx, 0
     eq_level = 0.80                   # current equity_frac (for glide)
+    held_eq_frac = 0.80               # equity_frac we last rebalanced to
 
     def _charge(amount_cost: float, amount_tax: float):
         """Deduct costs+tax from the reserve first, then debt if reserve empty."""
@@ -722,56 +723,60 @@ def run_matrix(
                 eff_eq_frac = target_eq_frac
                 eq_level = eff_eq_frac
 
-            # ── Sleeve targets against current total capital ──
-            C = (nifty_s.value(px_n) + mid_s.value(px_m)
-                 + gold_s.value(px_g) + debt_val + reserve)
-            base_ref = C / (1.0 + rob)
-            tgt_eq = eff_eq_frac * base_ref
-            if eff_eq_frac <= 1.0:
-                ne_val = (1.0 - eff_eq_frac) * base_ref
-                deployed_reserve = 0.0
-            else:
-                ne_val = 0.0
-                deployed_reserve = (eff_eq_frac - 1.0) * base_ref
-            tgt_debt, tgt_gold = _split_nonequity(ne_val, base_ref, spend_order)
-            tgt_reserve = rob * base_ref - deployed_reserve
+            # ── Rebalance ONLY when the target actually moves ──
+            # The tactical ladder is event-driven: it deploys on entering a
+            # deeper tier and harvests on entering a higher one, and otherwise
+            # HOLDS. Rebalancing the whole book every bar instead would harvest
+            # daily noise ("volatility pumping") and massively overstate returns
+            # — a constant-mix daily rebalance of these series compounds to
+            # several times a buy-and-hold of the same weights, which is a
+            # backtest artifact, not a tradeable return. So we trade only when
+            # the effective equity target has moved materially since the last
+            # rebalance; between moves, positions ride.
+            if abs(eff_eq_frac - held_eq_frac) > 1e-4:
+                C = (nifty_s.value(px_n) + mid_s.value(px_m)
+                     + gold_s.value(px_g) + debt_val + reserve)
+                base_ref = C / (1.0 + rob)
+                tgt_eq = eff_eq_frac * base_ref
+                if eff_eq_frac <= 1.0:
+                    ne_val = (1.0 - eff_eq_frac) * base_ref
+                else:
+                    ne_val = 0.0
+                tgt_debt, tgt_gold = _split_nonequity(ne_val, base_ref, spend_order)
+                tgt_n = EQUITY_NIFTY_FRAC * tgt_eq
+                tgt_m = (1 - EQUITY_NIFTY_FRAC) * tgt_eq
+                cost = tax_amt = 0.0
 
-            # ── Execute rebalance (sells first to raise cash, then buys) ──
-            tgt_n = EQUITY_NIFTY_FRAC * tgt_eq
-            tgt_m = (1 - EQUITY_NIFTY_FRAC) * tgt_eq
-            cost = tax_amt = 0.0
+                # sells first (raise cash into reserve), then buys draw it down
+                for sleeve, px, tgt in ((nifty_s, px_n, tgt_n), (mid_s, px_m, tgt_m),
+                                        (gold_s, px_g, tgt_gold)):
+                    cur = sleeve.value(px)
+                    if tgt < cur:
+                        proceeds, t = sleeve.sell_to_value(tgt, px, d, tax)
+                        cost += cost_frac * proceeds
+                        tax_amt += t
+                        reserve += proceeds
+                if tgt_debt < debt_val:
+                    reserve += debt_val - tgt_debt
+                    debt_val = tgt_debt
+                for sleeve, px, tgt in ((nifty_s, px_n, tgt_n), (mid_s, px_m, tgt_m),
+                                        (gold_s, px_g, tgt_gold)):
+                    cur = sleeve.value(px)
+                    if tgt > cur:
+                        spend = tgt - cur
+                        sleeve.buy(spend, px, d)
+                        reserve -= spend
+                        cost += cost_frac * spend
+                if tgt_debt > debt_val:
+                    reserve -= tgt_debt - debt_val
+                    debt_val = tgt_debt
+                _charge(cost, tax_amt)
+                held_eq_frac = eff_eq_frac
 
-            # sells
-            for sleeve, px, tgt in ((nifty_s, px_n, tgt_n), (mid_s, px_m, tgt_m),
-                                    (gold_s, px_g, tgt_gold)):
-                cur = sleeve.value(px)
-                if tgt < cur:
-                    proceeds, t = sleeve.sell_to_value(tgt, px, d, tax)
-                    cost += cost_frac * proceeds
-                    tax_amt += t
-                    reserve += proceeds          # proceeds park in reserve, then buys draw
-            if tgt_debt < debt_val:
-                reserve += debt_val - tgt_debt
-                debt_val = tgt_debt
-            # buys
-            for sleeve, px, tgt in ((nifty_s, px_n, tgt_n), (mid_s, px_m, tgt_m),
-                                    (gold_s, px_g, tgt_gold)):
-                cur = sleeve.value(px)
-                if tgt > cur:
-                    spend = tgt - cur
-                    sleeve.buy(spend, px, d)
-                    reserve -= spend
-                    cost += cost_frac * spend
-            if tgt_debt > debt_val:
-                reserve -= tgt_debt - debt_val
-                debt_val = tgt_debt
-            # reserve now holds the residual; it equals tgt_reserve up to leakage
-            _charge(cost, tax_amt)
-
-            # ── Depletion + gross tracking ──
-            if eff_eq_frac > 1.0 + 1e-9:
+            # ── Depletion + gross tracking (on the held state) ──
+            if held_eq_frac > 1.0 + 1e-9:
                 res.days_above_100 += 1
-            depleted_now = tgt_reserve <= 1e-6 and eff_eq_frac >= 1.0 + rob - 1e-9
+            depleted_now = held_eq_frac >= 1.0 + rob - 1e-9
             if depleted_now and res.depletion_date is None:
                 res.depletion_date = d
                 res.depletion_dist = dist

@@ -119,11 +119,13 @@ check("orders differ pre-tax", abs(rg.gold[-1] - rd.gold[-1]) > 1.0, True)
 # ── 8. Gates: fail closed on missing breadth; EMA-only when off ─
 print("\n[8] Gates")
 d, px = path([88.0] * 10)                      # T2 by EMA
-# gates_on but no breadth/vix -> fail closed -> stays baseline (equity ~80%)
+# gates_on but no breadth/vix -> fail closed -> never deploys (holds baseline,
+# so equity just drifts with price; it must stay well short of the T2 target).
 rc = be.run_matrix(d, px, px, px, {}, gates_on=True, deposit_yield=0.0)
 base_ref_c = rc.total[-1] / 1.20
-check("gate fails closed -> baseline equity ~80%", rc.equity[-1] / base_ref_c, 0.80, tol=0.02)
-# gates off -> deploys to T2 (equity ~92%)
+check("gate fails closed -> no deploy (below T2)", rc.equity[-1] / base_ref_c < 0.85, True)
+check("gate fails closed -> band held at baseline", rc.band[-1], "Baseline")
+# gates off -> deploys to T2: entering T2 triggers a rebalance to ~92% equity.
 ro = be.run_matrix(d, px, px, px, {}, gates_on=False, deposit_yield=0.0)
 base_ref_o = ro.total[-1] / 1.20
 check("gates off -> T2 equity ~92%", ro.equity[-1] / base_ref_o, 0.92, tol=0.02)
@@ -222,6 +224,27 @@ try:
     check("bad whipsaw raises", False, True)
 except ValueError:
     check("bad whipsaw raises", True, True)
+
+
+# ── 16. No volatility-pumping: baseline chop => pure buy-and-hold ──
+print("\n[16] Event-driven (no daily rebalance)")
+# Oscillate inside the baseline band (dist within -5..+8) so no tier ever fires.
+# The engine must HOLD (zero trades); daily rebalancing would instead harvest the
+# chop and inflate the total far above a buy-and-hold of the same weights.
+import random
+random.seed(7)
+tail = [100.0 + random.uniform(-4.0, 6.0) for _ in range(400)]
+d, px = path(tail)
+r_hold = be.run_matrix(d, px, px, px, {}, gates_on=False, deposit_yield=0.0)
+check("stayed at baseline (no tier)", set(r_hold.band[200:]) <= {"Baseline"}, True)
+check("no deployment", r_hold.days_above_100, 0)
+# Buy-and-hold of the initial baseline allocation, valued at the final price.
+base0 = r_hold.total[0] / 1.20
+units_eq = (0.58 * 0.80 * base0 + 0.42 * 0.80 * base0)   # both funds share px here
+bh_final = (0.80 * base0) * (px[-1] / px[0]) + (0.05 * base0) * (px[-1] / px[0]) \
+    + 0.15 * base0 + 0.20 * base0    # equity+gold ride price; debt+reserve flat (yield 0)
+check("total == buy-and-hold of initial mix (no pump)",
+      abs(r_hold.total[-1] - bh_final) < 1.0, True)
 
 
 print("\n" + "=" * 52)
