@@ -1,0 +1,8 @@
+# GitHub Actions runtime — no Streamlit, no plotly, no yfinance
+supabase
+feedparser
+requests
+pandas
+beautifulsoup4
+gspread
+google-auth
