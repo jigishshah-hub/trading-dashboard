@@ -237,10 +237,64 @@ def run(
     return res
 
 
+def static_allocation(dates: list[date], nifty: list[float], midcap: list[float],
+                      *, initial: float = 1_000_000.0,
+                      core_nifty_frac: float = 0.35,
+                      core_mid_frac: float = 0.25,
+                      tactical_frac: float = 0.40) -> Result:
+    """Same capital structure as the ladder, but the tactical reserve is never
+    deployed — it just earns CASH_YIELD.
+
+    This is the benchmark that isolates the ladder's RULES. Comparing the
+    ladder against a fully-invested portfolio instead measures the cash
+    allocation, which is a separate decision: the Nifty sits above its 200 EMA
+    roughly 90% of the time, so a reserve waiting for dips is idle most of the
+    time whatever the entry rules are.
+    """
+    res = Result()
+    n_units = initial * core_nifty_frac / nifty[0]
+    m_units = initial * core_mid_frac / midcap[0]
+    cash = initial * tactical_frac
+    daily_yield = (1 + CASH_YIELD) ** (1 / TRADING_DAYS) - 1
+    for i, d in enumerate(dates):
+        if i > 0:
+            cash *= 1 + daily_yield
+        res.dates.append(d)
+        res.equity.append(n_units * nifty[i] + m_units * midcap[i] + cash)
+        res.cash.append(cash)
+        res.deployed.append(0.0)
+    return res
+
+
+def lump_sum(dates: list[date], nifty: list[float], midcap: list[float],
+             *, initial: float = 1_000_000.0,
+             core_nifty_frac: float = 0.35,
+             core_mid_frac: float = 0.25,
+             tactical_frac: float = 0.40) -> Result:
+    """Tactical reserve deployed into midcap on day one and held.
+
+    Answers the other half of the question: does waiting for dips beat simply
+    being invested? The ladder only earns its keep if it beats this too.
+    """
+    res = Result()
+    n_units = initial * core_nifty_frac / nifty[0]
+    m_units = initial * (core_mid_frac + tactical_frac) / midcap[0]
+    for i, d in enumerate(dates):
+        res.dates.append(d)
+        res.equity.append(n_units * nifty[i] + m_units * midcap[i])
+        res.cash.append(0.0)
+        res.deployed.append(0.0)
+    return res
+
+
 def buy_and_hold(dates: list[date], nifty: list[float], midcap: list[float],
                  *, initial: float = 1_000_000.0,
                  nifty_frac: float = 0.60) -> Result:
-    """Benchmark: static split, no ladder, fully invested from day one."""
+    """Fully invested static split — an allocation ceiling, NOT a test of the
+    ladder's rules. It holds no cash, so it will normally beat any strategy
+    that keeps a reserve during a rising market. Read it as context, not as
+    the benchmark the ladder has to clear.
+    """
     res = Result()
     n_units = initial * nifty_frac / nifty[0]
     m_units = initial * (1 - nifty_frac) / midcap[0]

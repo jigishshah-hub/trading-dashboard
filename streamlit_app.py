@@ -3883,6 +3883,14 @@ with tab_backtest:
                               [n_by_date[d] for d in series_dates],
                               [m_by_date[d] for d in series_dates],
                               initial=bt_initial * 100_000)
+        static = bte.static_allocation(series_dates,
+                                       [n_by_date[d] for d in series_dates],
+                                       [m_by_date[d] for d in series_dates],
+                                       initial=bt_initial * 100_000)
+        lump = bte.lump_sum(series_dates,
+                            [n_by_date[d] for d in series_dates],
+                            [m_by_date[d] for d in series_dates],
+                            initial=bt_initial * 100_000)
 
         # ── Provenance ──
         first_decision = series_dates[min(199, len(series_dates) - 1)]
@@ -3905,19 +3913,64 @@ with tab_backtest:
             )
 
         # ── Headline ──
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Ladder CAGR", f"{res.cagr()*100:.2f}%")
-        m2.metric("Buy & hold CAGR", f"{bh.cagr()*100:.2f}%",
-                  delta=f"{(res.cagr()-bh.cagr())*100:+.2f} pp", delta_color="normal")
-        m3.metric("Final value", f"₹{res.final/100000:.2f}L")
-        m4.metric("Max drawdown", f"{res.max_drawdown()*100:.1f}%",
-                  delta=f"vs {bh.max_drawdown()*100:.1f}% B&H", delta_color="off")
+        # The like-for-like comparison is against the SAME allocation with the
+        # tactical reserve left in cash. Buy & hold is fully invested, so it
+        # measures the 40% cash decision, not the ladder's entry rules.
+        edge = res.cagr() - static.cagr()
+        h1, h2, h3 = st.columns(3)
+        h1.metric("Ladder CAGR", f"{res.cagr()*100:.2f}%")
+        h2.metric("Same allocation, no ladder", f"{static.cagr()*100:.2f}%",
+                  delta=f"{edge*100:+.2f} pp from the rules", delta_color="normal")
+        h3.metric("Max drawdown", f"{res.max_drawdown()*100:.1f}%",
+                  delta=f"vs {static.max_drawdown()*100:.1f}% static", delta_color="off")
+
+        st.markdown(
+            f'<div class="fw-h">All four portfolios<span class="rule"></span></div>',
+            unsafe_allow_html=True)
+        comp = pd.DataFrame([
+            {"Portfolio": "Tactical Ladder",
+             "What it is": "35/25 core + 40% tactical deployed by the rules",
+             "CAGR": f"{res.cagr()*100:.2f}%",
+             "Final": f"₹{res.final/100000:.2f}L",
+             "Max DD": f"{res.max_drawdown()*100:.1f}%"},
+            {"Portfolio": "Same allocation, no ladder",
+             "What it is": "35/25 core + 40% left in cash at 6.5%",
+             "CAGR": f"{static.cagr()*100:.2f}%",
+             "Final": f"₹{static.final/100000:.2f}L",
+             "Max DD": f"{static.max_drawdown()*100:.1f}%"},
+            {"Portfolio": "Lump sum",
+             "What it is": "Tactical deployed into midcap on day one, held",
+             "CAGR": f"{lump.cagr()*100:.2f}%",
+             "Final": f"₹{lump.final/100000:.2f}L",
+             "Max DD": f"{lump.max_drawdown()*100:.1f}%"},
+            {"Portfolio": "Fully invested 60/40",
+             "What it is": "No cash at all — an allocation ceiling, not a rules test",
+             "CAGR": f"{bh.cagr()*100:.2f}%",
+             "Final": f"₹{bh.final/100000:.2f}L",
+             "Max DD": f"{bh.max_drawdown()*100:.1f}%"},
+        ])
+        st.dataframe(comp, use_container_width=True, hide_index=True)
+
+        pct_below = sum(
+            1 for i, d in enumerate(res.dates)
+            if res.deployed[i] > 0) / max(1, len(res.dates)) * 100
+        st.caption(
+            f"The ladder held some tactical exposure on {pct_below:.0f}% of bars. "
+            "Read **ladder vs same-allocation-no-ladder** to judge the rules: both "
+            "hold the same 40% reserve, so the only difference is whether it gets "
+            "deployed on dips. Comparing against the fully-invested column instead "
+            "measures the decision to hold a reserve at all — the Nifty sits above "
+            "its 200 EMA roughly 90% of the time, so any waiting reserve is idle "
+            "most of the time whatever the entry rules are."
+        )
 
         # ── Equity curve ──
         eq = pd.DataFrame({
             "Date": res.dates,
             "Tactical Ladder": res.equity,
-            "Buy & hold": bh.equity,
+            "Same allocation, no ladder": static.equity,
+            "Lump sum": lump.equity,
+            "Fully invested 60/40": bh.equity,
         }).set_index("Date")
         st.line_chart(eq, height=300)
 
