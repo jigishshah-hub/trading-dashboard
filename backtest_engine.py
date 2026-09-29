@@ -939,11 +939,17 @@ def fixed_rebalance(
     *, initial: float = 1_000_000.0,
     equity_frac: float = 0.75, debt_frac: float = 0.15, gold_frac: float = 0.10,
     deposit_yield: float = DEPOSIT_YIELD, rebalance_days: int = TRADING_DAYS,
+    tax: bool = False,
 ) -> MatrixResult:
     """Fixed equity/debt/gold, rebalanced every `rebalance_days`. The honest
     passive baseline (§5). Fully invested — no standby reserve. Equity is split
     58/42 Nifty/Midcap like the matrix; debt earns deposit_yield; gold rides the
     synthetic INR series. Measured on total capital for a like-for-like compare.
+
+    `tax` must match the ladder run being compared against. It defaults False
+    for backwards compatibility, but a taxed ladder measured against an untaxed
+    benchmark is not like-for-like and flatters the benchmark — the rebalance
+    realises gains and would owe CGT in reality.
     """
     res = MatrixResult()
     daily_yield = (1 + deposit_yield) ** (1 / TRADING_DAYS) - 1
@@ -964,12 +970,16 @@ def fixed_rebalance(
             tgt_m = (1 - EQUITY_NIFTY_FRAC) * equity_frac * C
             tgt_g = gold_frac * C
             cash = 0.0
+            tax_amt = 0.0
             for sleeve, px, tgt in ((nifty_s, px_n, tgt_n), (mid_s, px_m, tgt_m),
                                     (gold_s, px_g, tgt_g)):
                 cur = sleeve.value(px)
                 if tgt < cur:
-                    p, _ = sleeve.sell_to_value(tgt, px, d, False)
+                    p, t = sleeve.sell_to_value(tgt, px, d, tax)
                     cash += p
+                    tax_amt += t
+            cash -= tax_amt                 # CGT is paid out of proceeds
+            res.tax_paid += tax_amt
             cash += max(0.0, debt_val - debt_frac * C)
             debt_val = min(debt_val, debt_frac * C)
             for sleeve, px, tgt in ((nifty_s, px_n, tgt_n), (mid_s, px_m, tgt_m),
