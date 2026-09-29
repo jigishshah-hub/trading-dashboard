@@ -599,6 +599,7 @@ class MatrixResult:
     nifty_units: list[float] = field(default_factory=list)
     mid_units: list[float] = field(default_factory=list)
     # Depletion (the headline risk numbers of the whole exercise):
+    contributed: float = 0.0
     depletion_date: date | None = None
     depletion_dist: float | None = None
     max_dist_after_depletion: float | None = None
@@ -661,6 +662,7 @@ def run_matrix(
     harvest_shrink: float = 0.0,
     gate_ratchet: bool = False,
     periodic_rebalance_days: int = 0,
+    contributions: dict | None = None,
 ) -> MatrixResult:
     """Allocation-matrix backtest on aligned daily series.
 
@@ -748,6 +750,19 @@ def run_matrix(
         if i > 0:
             reserve *= 1 + daily_yield
             debt_val *= 1 + daily_yield
+
+        # ── External contribution (SIP / staged capital) ──────────────
+        # New money lands in debt, then the band target pulls it to the
+        # intended weight on the forced rebalance below. This is an EXTERNAL
+        # infusion, so total capital is no longer a closed system: compare
+        # strategies on final value under an IDENTICAL contribution schedule,
+        # not on CAGR of total.
+        _contributed = 0.0
+        if contributions:
+            _contributed = contributions.get(d, 0.0)
+            if _contributed:
+                debt_val += _contributed
+                res.contributed += _contributed
 
         # ── ATH / trough tracking (needed by all three harvest modes) ──
         if px_n > _ath:
@@ -849,7 +864,7 @@ def run_matrix(
             # the effective equity target has moved materially since the last
             # rebalance; between moves, positions ride.
             _due = (periodic_rebalance_days > 0
-                    and i - _last_periodic >= periodic_rebalance_days)
+                    and i - _last_periodic >= periodic_rebalance_days) or _contributed > 0
             if abs(eff_eq_frac - held_eq_frac) > 1e-4 or _due:
                 if _due:
                     _last_periodic = i
@@ -945,7 +960,7 @@ def fixed_rebalance(
     *, initial: float = 1_000_000.0,
     equity_frac: float = 0.75, debt_frac: float = 0.15, gold_frac: float = 0.10,
     deposit_yield: float = DEPOSIT_YIELD, rebalance_days: int = TRADING_DAYS,
-    tax: bool = False,
+    tax: bool = False, contributions: dict | None = None,
 ) -> MatrixResult:
     """Fixed equity/debt/gold, rebalanced every `rebalance_days`. The honest
     passive baseline (§5). Fully invested — no standby reserve. Equity is split
@@ -970,7 +985,11 @@ def fixed_rebalance(
         px_n, px_m, px_g = nifty[i], midcap[i], gold[i]
         if i > 0:
             debt_val *= 1 + daily_yield
-        if i > 0 and i - last_rebal >= rebalance_days:
+        _contributed = contributions.get(d, 0.0) if contributions else 0.0
+        if _contributed:
+            debt_val += _contributed
+            res.contributed += _contributed
+        if i > 0 and (i - last_rebal >= rebalance_days or _contributed > 0):
             C = nifty_s.value(px_n) + mid_s.value(px_m) + gold_s.value(px_g) + debt_val
             tgt_n = EQUITY_NIFTY_FRAC * equity_frac * C
             tgt_m = (1 - EQUITY_NIFTY_FRAC) * equity_frac * C
