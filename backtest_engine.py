@@ -660,6 +660,7 @@ def run_matrix(
     harvest_cap_frac: float = 0.0,
     harvest_shrink: float = 0.0,
     gate_ratchet: bool = False,
+    periodic_rebalance_days: int = 0,
 ) -> MatrixResult:
     """Allocation-matrix backtest on aligned daily series.
 
@@ -721,6 +722,7 @@ def run_matrix(
     pending_idx, pending_cnt = eff_idx, 0
     eq_level = 0.80                   # current equity_frac (for glide)
     held_eq_frac = 0.80               # equity_frac we last rebalanced to
+    _last_periodic = 0                # bar index of the last periodic rebalance
 
     # Harvest-mode state (used when harvest_gate / harvest_cap_frac / harvest_shrink > 0)
     _ath = nifty[0]        # running all-time-high
@@ -846,7 +848,11 @@ def run_matrix(
             # backtest artifact, not a tradeable return. So we trade only when
             # the effective equity target has moved materially since the last
             # rebalance; between moves, positions ride.
-            if abs(eff_eq_frac - held_eq_frac) > 1e-4:
+            _due = (periodic_rebalance_days > 0
+                    and i - _last_periodic >= periodic_rebalance_days)
+            if abs(eff_eq_frac - held_eq_frac) > 1e-4 or _due:
+                if _due:
+                    _last_periodic = i
                 C = (nifty_s.value(px_n) + mid_s.value(px_m)
                      + gold_s.value(px_g) + debt_val + reserve)
                 base_ref = C / (1.0 + rob)

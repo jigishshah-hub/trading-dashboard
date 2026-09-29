@@ -93,3 +93,68 @@ without timing risk. Discrete tiers harvest it worse.
 - Deep-bucket forward returns rest on few independent episodes (32 overlapping
   bars below −30%, perhaps three distinct events).
 - Two windows, one market. No permanently-impaired cycle exists in Indian data.
+
+---
+
+# Addendum — yearly rebalance combined with a depth-triggered lever
+
+Adds `periodic_rebalance_days` to `run_matrix` (default 0 = off, verified inert:
+the modern window returns an identical total) so the ladder can rebalance on a
+calendar as well as on band changes. This makes "yearly rebalance PLUS add when
+Nifty falls below the 200 EMA" expressible, which it previously was not.
+
+Designs tested, all no gold, yearly periodic rebalance, taxed + 10bps:
+
+- **graduated add** — target equity rises 0.65 → 0.75 → 0.85 → 0.95 → 1.00 at
+  0 / −10 / −20 / −30%, so buffer is never fully spent until extreme depth
+- **jump to full** — 0.65 base, straight to 1.00 below −15%
+- **lever to 120%** — 0.65 base rising to 1.20 below −30%, funded by a 20% reserve
+
+| MODERN | final | CAGR | max DD |
+|---|---|---|---|
+| **fixed 65/35 yearly** | **30,66,154** | **9.52%** | **−24.5%** |
+| fixed 75/25 yearly | 32,18,251 | 9.95% | −28.3% |
+| 65 + graduated add | 28,54,678 | 8.88% | −32.4% |
+| 65 + jump to full | 31,84,453 | 9.86% | −30.5% |
+| 65 + lever to 120% | 27,62,232 | 8.59% | −28.1% |
+
+| 2008 | final | CAGR | max DD |
+|---|---|---|---|
+| **fixed 65/35 yearly** | **22,90,346** | **10.79%** | **−43.2%** |
+| fixed 75/25 yearly | 22,96,406 | 10.82% | −49.8% |
+| 65 + graduated add | 18,37,403 | 7.81% | −54.0% |
+| 65 + jump to full | 19,49,318 | 8.60% | −54.3% |
+| 65 + lever to 120% | 18,32,963 | 7.78% | −48.3% |
+
+Every lever variant is worse than the constant weight on **both** return and
+drawdown, in **both** windows. Leverage is the worst of all: −3.01pp CAGR and
+5.1pp more drawdown than fixed 65/35 in 2008.
+
+### Likely mechanism (inference, not isolated)
+Any depth-varying target forces selling on the way back **up**: as price recovers
+through each band the target steps down and the book trims, capping
+participation in the rebound that the deep buy was meant to capture. A constant
+weight trims once a year, to the same number. This is consistent with the
+earlier finding that suppressing recovery sells (`harvest_gate`) was the single
+biggest improvement available to the ladder — it was patching this.
+
+## Stopping rule
+About 25 configurations of one idea have now been tested: the original ladder,
+four no-gold shapes, six add-only variants, graduated tilts, jump-to-full and
+leverage. All lose to a constant weight rebalanced yearly.
+
+Further variant search is not advisable. With ~10 complete cycles and this many
+attempts, something will eventually clear the benchmark by chance and it will
+not survive contact with real money. The consistency of the result across
+unrelated parameterisations is itself the evidence: this is the shape of the
+idea, not a bad choice of numbers.
+
+## Standing recommendation
+Fixed 65/35 equity/debt, rebalanced yearly, no gold.
+
+Better next steps than more ladder variants:
+1. **Validate** 65/35 yearly — vary the rebalance month, and test on 1996–2007,
+   which the Sensex file covers and nothing here has used.
+2. **Revisit the 42% midcap weight.** Midcap fell −69.6% vs Nifty −59.9% in 2008
+   and −24.8% vs −15.8% in cy2024. That weight may cost more drawdown than the
+   ladder was ever going to save.
