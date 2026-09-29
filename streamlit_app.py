@@ -37,12 +37,10 @@ RED = "#c83b3b"
 AMBER = "#a76a00"
 MUTED = "#667085"
 
-
 # ── Data layer ──────────────────────────────────────────────
 @st.cache_resource
 def _sb():
     return create_client(SB_URL, st.secrets["SUPABASE_SERVICE_ROLE_KEY"])
-
 
 @st.cache_data(ttl=60)
 def load():
@@ -59,11 +57,12 @@ def load():
         "breadth_1pct": sb.table("breadth_readings").select("*").eq("source", "rzone_pnf_1pct").order("reading_date", desc=True).limit(1).execute().data or [],
         "breadth_025pct": sb.table("breadth_readings").select("*").eq("source", "rzone_pnf_025pct").order("reading_date", desc=True).limit(1).execute().data or [],
         "snapshots": sb.table("daily_snapshots").select("*").order("snapshot_date").execute().data or [],
+        "research_notes": sb.table("research_notes").select("*").execute().data or [],
+        "thesis_killers": sb.table("thesis_killers").select("*").eq("is_active", True).execute().data or [],
+        "monitoring_checklist": sb.table("monitoring_checklist").select("*").eq("is_active", True).execute().data or [],
     }
 
-
 D = load()
-
 
 # ── Live price fetch (yfinance) during market hours ────────
 def _is_nse_market_hours():
@@ -75,7 +74,6 @@ def _is_nse_market_hours():
     market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
     market_close = now.replace(hour=15, minute=35, second=0, microsecond=0)  # 5-min buffer
     return market_open <= now <= market_close
-
 
 @st.cache_data(ttl=120)  # 2-min cache
 def fetch_live_prices(tickers_tuple):
@@ -107,7 +105,6 @@ def fetch_live_prices(tickers_tuple):
         return prices
     except Exception:
         return {}
-
 
 # ── Nifty 50 Market Regime ──────────────────────────────────
 @st.cache_data(ttl=120)  # 2-min cache during market hours
@@ -186,9 +183,7 @@ def fetch_nifty_regime():
     except Exception:
         return None
 
-
 nifty = fetch_nifty_regime()
-
 
 # ── Fear Gauges: MOVE Index + India VIX + Junk Bond Spread ──
 @st.cache_data(ttl=900)  # 15-min cache
@@ -291,9 +286,7 @@ def fetch_fear_gauges():
 
     return gauges
 
-
 fear_gauges = fetch_fear_gauges()
-
 
 # ── Per-Stock Analysis Engine ────────────────────────────────
 import numpy as np
@@ -315,14 +308,12 @@ def fetch_stock_history(ticker, period="2y"):
     except Exception:
         return None
 
-
 _RS_BENCHMARKS = {
     "Nifty 50": "^NSEI",
     "Nifty Bank": "^NSEBANK",
     "Nifty IT": "^CNXIT",
     "Nifty Midcap 50": "^NSEMDCP50",
 }
-
 
 @st.cache_data(ttl=1800)
 def fetch_benchmark_history(symbol, period="2y"):
@@ -339,7 +330,6 @@ def fetch_benchmark_history(symbol, period="2y"):
     except Exception:
         return None
 
-
 def compute_relative_strength(stock_df, bench_df, ma_period=20):
     """Compute RS ratio = stock / benchmark, normalised to start at 100."""
     merged = pd.merge(stock_df[["Date", "Close"]], bench_df, on="Date",
@@ -350,7 +340,6 @@ def compute_relative_strength(stock_df, bench_df, ma_period=20):
     merged["RS"] = merged["RS_Raw"] / merged["RS_Raw"].iloc[0] * 100
     merged["RS_MA"] = merged["RS"].rolling(ma_period).mean()
     return merged[["Date", "RS", "RS_MA"]]
-
 
 def compute_technicals(df):
     """Compute technical indicators on a price DataFrame."""
@@ -390,7 +379,6 @@ def compute_technicals(df):
     ], axis=1).max(axis=1)
     d["ATR"] = tr.rolling(14).mean()
     return d
-
 
 def compute_stats_model(df, entry, stop, target):
     """Statistical edge model: Monte Carlo, MFE/MAE, momentum, volatility.
@@ -651,7 +639,6 @@ def compute_stats_model(df, entry, stop, target):
         "pct_from_entry": pct_from_entry,
     }
 
-
 # ── Nifty 50 Breadth — % stocks above 200 DMA ─────────────
 NIFTY50_TICKERS = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
@@ -666,7 +653,6 @@ NIFTY50_TICKERS = [
     "BAJAJ-AUTO.NS", "BPCL.NS", "BEL.NS", "TRENT.NS", "SHRIRAMFIN.NS",
     "HEROMOTOCO.NS",
 ]
-
 
 @st.cache_data(ttl=120)  # 2-min cache during market hours
 def fetch_nifty50_breadth():
@@ -700,7 +686,6 @@ def fetch_nifty50_breadth():
         }
     except Exception:
         return None
-
 
 breadth_yf = fetch_nifty50_breadth()
 
@@ -775,7 +760,6 @@ if _is_nse_market_hours():
     live_prices = fetch_live_prices(active_tickers)
     price_map.update(live_prices)
 
-
 # ── Helpers ─────────────────────────────────────────────────
 def f(v):
     if v is None or v == "":
@@ -785,14 +769,12 @@ def f(v):
     except (ValueError, TypeError):
         return None
 
-
 def get_cmp(ticker, entry_price=None):
     if ticker in price_map:
         return price_map[ticker], True
     if entry_price is not None:
         return entry_price, False
     return None, False
-
 
 def fmt(n):
     if n is None:
@@ -801,12 +783,10 @@ def fmt(n):
         return f"₹{n / 100000:.2f}L"
     return f"₹{n:,.0f}"
 
-
 def fmt_pct(n):
     if n is None:
         return "—"
     return f"{'+' if n >= 0 else ''}{n:.2f}%"
-
 
 def fmt_date(d):
     if not d:
@@ -816,7 +796,6 @@ def fmt_date(d):
     except Exception:
         return str(d)[:10]
 
-
 def short_date(d):
     if not d:
         return ""
@@ -825,12 +804,10 @@ def short_date(d):
     except Exception:
         return str(d)[:10]
 
-
 def conds_for(trade_id, ctype=None):
     return [c for c in D["conds"]
             if c.get("trade_id") == trade_id
             and (ctype is None or c.get("condition_type") == ctype)]
-
 
 def days_since(date_str):
     if not date_str:
@@ -840,7 +817,6 @@ def days_since(date_str):
         return (datetime.now().date() - d).days
     except Exception:
         return None
-
 
 def _breadth_age(date_str):
     """Label a manually-entered breadth reading with its date and how stale it is.
@@ -873,10 +849,8 @@ def _breadth_age(date_str):
         return f"{d:%d %b} · current"
     return f"{d:%d %b} · {sessions} session{'s' if sessions > 1 else ''} old"
 
-
 def _is_weekday(d):
     return d.weekday() < 5
-
 
 def sev_icon(tag):
     if tag == "thesis-threatening":
@@ -884,7 +858,6 @@ def sev_icon(tag):
     if tag == "material change":
         return "🟡"
     return "⚪"
-
 
 def review_urgency(review_date):
     if not review_date:
@@ -899,7 +872,6 @@ def review_urgency(review_date):
         return ""
     except Exception:
         return ""
-
 
 # ── Compute enriched positions ──────────────────────────────
 positions = []
@@ -1048,7 +1020,6 @@ for p in positions:
 danger_alerts = [a for a in alerts if a["level"] == "danger"]
 warning_alerts = [a for a in alerts if a["level"] == "warning"]
 
-
 # ── Header ──────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -1139,7 +1110,6 @@ with c2:
 tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system, tab_framework, tab_backtest = st.tabs([
     "🎯 Cockpit", "📊 Positions", "⚡ Risk", "📈 Performance", "🔬 Thesis Monitor", "⚙️ System & Data", "🔄 Full Cycle Framework", "🧪 Backtest"
 ])
-
 
 # ═══════════════════════════════════════════════════════════
 # TAB 1 — COCKPIT
@@ -1910,7 +1880,6 @@ with tab_cockpit:
     st.markdown(f"**Total Active** — Invested: {fmt(total_invested)} · Value: {fmt(total_value)} · "
                 f"P&L: **{fmt_pct(total_ret)}** ({fmt(unrealized_pnl)})")
 
-
 # ═══════════════════════════════════════════════════════════
 # TAB 2 — POSITIONS
 # ═══════════════════════════════════════════════════════════
@@ -2611,7 +2580,6 @@ with tab_positions:
             else:
                 st.caption("Could not load price history from Yahoo Finance.")
 
-
 # ═══════════════════════════════════════════════════════════
 # TAB 3 — RISK
 # ═══════════════════════════════════════════════════════════
@@ -2715,7 +2683,6 @@ with tab_risk:
         | Drawdown | Portfolio + sleeve |
         | Stress test | Nifty / sector shock |
         """)
-
 
 # ═══════════════════════════════════════════════════════════
 # TAB 4 — PERFORMANCE
@@ -3086,80 +3053,136 @@ with tab_perf:
                     f'<span style="color:{MUTED};font-size:12px">({fmt(sl_val)} / {fmt(sl_peak)})</span>'
                     f'</div>', unsafe_allow_html=True)
 
-
 # ═══════════════════════════════════════════════════════════
 # TAB 5 — THESIS MONITOR
 # ═══════════════════════════════════════════════════════════
 with tab_thesis:
     st.markdown("#### Investment Thesis Monitor")
-    st.caption("Separate business thesis from price movement. Anchor positions deserve deepest monitoring.")
+    st.caption("Separate business thesis from price movement. Research-backed thesis killers are cross-checked against incoming news.")
 
-    # Build thesis table
+    # Index the research repository (research_notes / thesis_killers / monitoring_checklist)
+    notes_by_ticker = {r["ticker"]: r for r in D["research_notes"]}
+    killers_by_ticker = {}
+    for k in D["thesis_killers"]:
+        killers_by_ticker.setdefault(k["ticker"], []).append(k)
+    monitors_by_ticker = {}
+    for m in D["monitoring_checklist"]:
+        monitors_by_ticker.setdefault(m["ticker"], []).append(m)
+
+    def _killer_hits(killer, ticker_news):
+        """Heuristic cross-reference: match a thesis-killer label's word tokens against news text."""
+        toks = [t for t in (killer.get("label") or "").lower().split("_") if len(t) >= 4]
+        out = []
+        for n in ticker_news:
+            txt = f"{n.get('headline','')} {n.get('body_snippet','')} {n.get('severity_reasoning','')}".lower()
+            if toks and any(t in txt for t in toks):
+                out.append(n)
+        return out
+
+    # ── Summary table ──
     thesis_rows = []
     for p in sorted(positions, key=lambda x: x["weight"], reverse=True):
         ticker = p["ticker"]
-
-        # Check news categories
         ticker_news = [n for n in D["news"] if n.get("ticker") == ticker]
         has_threat = any(n.get("severity_tag") == "thesis-threatening" for n in ticker_news)
         has_material = any(n.get("severity_tag") == "material change" for n in ticker_news)
-
-        # Fundamentals snapshot
         snap = next((s for s in D["fundsnap"] if s.get("ticker") == ticker), None)
+        note = notes_by_ticker.get(ticker)
+        active_killers = killers_by_ticker.get(ticker, [])
+        flagged = [k for k in active_killers if _killer_hits(k, ticker_news)]
 
-        # Technical: based on price vs stop
         if p["cmp"] <= p["stop"] and p["stop"] > 0:
-            tech = "🔴 STOP"
+            tech = "\U0001F534 STOP"
         elif p["cmp"] < p["entry"]:
-            tech = "🟡 Below entry"
+            tech = "\U0001F7E1 Below entry"
         else:
-            tech = "🟢 Positive"
+            tech = "\U0001F7E2 Positive"
 
-        # Overall
-        if has_threat:
-            overall = "🔴 Review"
+        if has_threat or flagged:
+            overall = "\U0001F534 Review"
         elif has_material or (p["cmp"] <= p["stop"] and p["stop"] > 0):
-            overall = "🟡 Review"
+            overall = "\U0001F7E1 Review"
         else:
-            overall = "🟢 Intact"
+            overall = "\U0001F7E2 Intact"
 
-        urg = review_urgency(p["review_date"])
+        if active_killers:
+            killers_cell = f"\u26A0\uFE0F {len(flagged)}/{len(active_killers)}" if flagged else str(len(active_killers))
+        else:
+            killers_cell = "\u2014"
 
         thesis_rows.append({
             "Ticker": ticker,
             "Sleeve": p["sleeve"],
-            "Fundamentals": "📊 Available" if snap else "⏳ Pending",
-            "News": f"🔴 Threat" if has_threat else (f"🟡 Material" if has_material else "🟢 Clear"),
+            "Verdict": (note.get("analyst_verdict") or "\u2014") if note else "No note",
+            "Killers": killers_cell,
+            "Fundamentals": "\U0001F4CA" if snap else "\u23F3",
+            "News": "\U0001F534 Threat" if has_threat else ("\U0001F7E1 Material" if has_material else "\U0001F7E2 Clear"),
             "Technical": tech,
             "Overall": overall,
-            "Next Review": f"{fmt_date(p['review_date'])} {urg}" if p["review_date"] else "Set date",
-            "Thesis Note": p["thesis_note"][:50] + "…" if len(p["thesis_note"]) > 50 else p["thesis_note"],
         })
 
     st.dataframe(pd.DataFrame(thesis_rows), use_container_width=True, hide_index=True)
+    st.caption("Killers = flagged / total active thesis killers. \u26A0\uFE0F means a recent news item may match a thesis killer.")
 
     st.divider()
 
-    # Per-ticker thesis detail
-    tc1, tc2, tc3 = st.columns(3)
-    with tc1:
-        st.markdown("##### Fundamental Alerts")
-        st.caption("Automate from filings/results")
-        st.markdown("Revenue / EBITDA miss → **Monitor**")
-        st.markdown("Cash-flow deterioration → **Monitor**")
-        st.markdown("Debt / dilution → **Monitor**")
-    with tc2:
-        st.markdown("##### Governance Alerts")
-        st.caption("High-impact exceptions")
-        st.markdown("Promoter selling / pledge → **Monitor**")
-        st.markdown("RPT / related-party changes → **Monitor**")
-        st.markdown("Credit rating → **Monitor**")
-    with tc3:
-        st.markdown("##### Upcoming Events")
-        st.caption("Next 30 days")
-        st.markdown("Results → **Connect calendar**")
-        st.markdown("Concall / presentation → **Connect filings**")
-        st.markdown("Corporate actions → **Connect filings**")
+    # ── Thesis Killer Watch (research-backed, cross-referenced with news) ──
+    st.markdown("#### \U0001F3AF Thesis Killer Watch")
+    researched = [p["ticker"] for p in sorted(positions, key=lambda x: x["weight"], reverse=True)
+                  if p["ticker"] in notes_by_ticker or p["ticker"] in killers_by_ticker]
+    for t in notes_by_ticker:
+        if t not in researched:
+            researched.append(t)
+
+    if not researched:
+        st.info("No research notes synced yet. Add a `## Thesis Killers` section with `[TK]` lines to a note in `12 Research`, save it, and the watcher syncs it here.")
+    else:
+        sel = st.selectbox("Stock", researched, key="tk_stock")
+        note = notes_by_ticker.get(sel)
+        sel_news = [n for n in D["news"] if n.get("ticker") == sel]
+
+        if note:
+            vc1, vc2, vc3, vc4 = st.columns(4)
+            vc1.metric("Verdict", note.get("analyst_verdict") or "\u2014")
+            vc2.metric("Status", note.get("status") or "\u2014")
+            iv_lo, iv_hi = f(note.get("intrinsic_value_low")), f(note.get("intrinsic_value_high"))
+            vc3.metric("Intrinsic Value", f"{fmt(iv_lo)}\u2013{fmt(iv_hi)}" if iv_lo and iv_hi else "\u2014")
+            vc4.metric("CMP at analysis", fmt(f(note.get("cmp_at_analysis"))))
+            if note.get("primary_risk"):
+                st.caption(f"**Primary risk:** {note['primary_risk']}")
+
+        active_killers = killers_by_ticker.get(sel, [])
+        if active_killers:
+            st.markdown("##### Thesis Killers")
+            for k in active_killers:
+                hits = _killer_hits(k, sel_news)
+                if hits:
+                    border, bg, tag = "#ef4444", "rgba(239,68,68,.05)", "\u26A0\uFE0F POSSIBLE MATCH"
+                    hit_html = f'<div style="font-size:11px;color:#b23b3b;margin-top:4px">\u21B3 {hits[0].get("headline","")}</div>'
+                else:
+                    border, bg, tag = "#3f9142", "rgba(63,145,66,.04)", "\U0001F7E2 clear"
+                    hit_html = ""
+                st.markdown(
+                    f'<div style="padding:8px 12px;margin:4px 0;background:{bg};border-left:3px solid {border};border-radius:4px">'
+                    f'<span style="font-family:monospace;font-size:11px;color:#888">[{k.get("label","")}]</span> '
+                    f'<span style="font-size:13px">{k.get("description","")}</span> '
+                    f'<span style="font-size:10px;color:{border};font-weight:700"> {tag}</span>'
+                    f'{hit_html}</div>', unsafe_allow_html=True)
+        else:
+            st.caption("No active thesis killers for this stock.")
+
+        monitors = monitors_by_ticker.get(sel, [])
+        if monitors:
+            st.markdown("##### Monitoring Checklist")
+            order = {"QUARTERLY": 0, "EVENT": 1, "MONTHLY": 2, "ANNUAL": 3}
+            for m in sorted(monitors, key=lambda x: order.get(x.get("frequency"), 9)):
+                st.markdown(
+                    f'<div style="padding:4px 0;font-size:13px">'
+                    f'<span style="display:inline-block;min-width:82px;font-size:10px;font-weight:700;color:#5b4bb0">{m.get("frequency","")}</span>'
+                    f'<span style="font-family:monospace;font-size:11px;color:#888">{m.get("label","")}</span> \u2014 {m.get("description","")}</div>',
+                    unsafe_allow_html=True)
+
+    st.divider()
 
     # News feed for thesis
     st.divider()
@@ -3204,7 +3227,6 @@ with tab_thesis:
                 f'</div>', unsafe_allow_html=True)
     else:
         st.success("No material news alerts.")
-
 
 # ═══════════════════════════════════════════════════════════
 # TAB 6 — SYSTEM & DATA
@@ -3484,7 +3506,6 @@ with tab_system:
         st.caption("Data refreshes automatically every 60 seconds. Prices sync every 30 min during market hours. "
                     "Announcements scan hourly.")
 
-
 # ═══════════════════════════════════════════════════════════
 # TAB 7 — FULL CYCLE FRAMEWORK
 # ═══════════════════════════════════════════════════════════
@@ -3694,8 +3715,6 @@ with tab_framework:
         - **VIX correlation**: corrections with VIX > 25 tend to be 1.5× deeper but recover faster
         """)
 
-
-
 # ═══════════════════════════════════════════════════════════
 # TAB 8 — BACKTEST
 # ═══════════════════════════════════════════════════════════
@@ -3781,7 +3800,6 @@ with tab_backtest:
         "MIDCAPETF.NS": "Midcap ETF — proxy",
         "^NSEI": "Nifty 50 — fallback, not a midcap series",
     }
-
 
     # A guard flag, not st.stop(): st.stop() would abort the whole script run,
     # taking the footer and every later element with it, just because this one
