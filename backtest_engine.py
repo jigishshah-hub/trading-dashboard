@@ -434,25 +434,37 @@ def _gate_ok(b: Band, breadth: float | None, vix: float | None, gates_on: bool) 
     return True
 
 
-def resolve_band(dist: float, breadth: float | None, vix: float | None,
-                 gates_on: bool, matrix: list[Band]) -> int:
-    """Deepest reachable band whose gate passes.
+def resolve_band_ex(dist: float, breadth: float | None, vix: float | None,
+                    gates_on: bool, matrix: list[Band]) -> tuple[int, bool]:
+    """Deepest reachable band whose gate passes, plus whether a gate forced it.
 
     Above baseline (dist > -5) there are no gates. In the deploy region the
     market has, by definition, also reached every shallower deploy band, so if
     the current band's gate fails we fall back to the deepest shallower deploy
     band that confirms — never deploying past what the gates allow.
+
+    The second element is True when the returned band is SHALLOWER than the one
+    price alone would select, i.e. the fallback was caused by a gate failure and
+    not by price recovering. Callers use it to keep the gate a deploy gate: it
+    may block an increase, but it must never mandate a decrease of an existing
+    holding (see `gate_ratchet` in run_matrix).
     """
     raw = _band_for_dist(dist, matrix)
     if matrix[raw].breadth_max is None and matrix[raw].vix_min is None:
-        return raw                                  # baseline / frothy, no gate
+        return raw, False                           # baseline / frothy, no gate
     for i in range(raw, -1, -1):                    # walk shallower until one confirms
         b = matrix[i]
         if b.breadth_max is None and b.vix_min is None:
-            return i                                # reached baseline
+            return i, i != raw                      # reached baseline
         if _gate_ok(b, breadth, vix, gates_on):
-            return i
-    return raw
+            return i, i != raw
+    return raw, False
+
+
+def resolve_band(dist: float, breadth: float | None, vix: float | None,
+                 gates_on: bool, matrix: list[Band]) -> int:
+    """Deepest reachable band whose gate passes. See resolve_band_ex."""
+    return resolve_band_ex(dist, breadth, vix, gates_on, matrix)[0]
 
 
 # ── XIRR (cash-flow IRR), the §3 cross-check ─────────────────
@@ -647,6 +659,7 @@ def run_matrix(
     harvest_gate: float = 0.0,
     harvest_cap_frac: float = 0.0,
     harvest_shrink: float = 0.0,
+    gate_ratchet: bool = False,
 ) -> MatrixResult:
     """Allocation-matrix backtest on aligned daily series.
 
@@ -747,7 +760,7 @@ def run_matrix(
             dist = (px_n - e) / e * 100.0
             b = breadth.get(d)
             vx = vix.get(d)
-            raw_idx = resolve_band(dist, b, vx, gates_on, matrix)
+            raw_idx, gate_blocked = resolve_band_ex(dist, b, vx, gates_on, matrix)
 
             # ── Anti-whipsaw → effective band ──
             if whipsaw == "none" or whipsaw == "glide":
@@ -780,6 +793,22 @@ def run_matrix(
             else:
                 eff_eq_frac = target_eq_frac
                 eq_level = eff_eq_frac
+
+            # ── Gate ratchet ──────────────────────────────────────────────
+            # The breadth/VIX gate is a DEPLOY gate: it exists to stop us
+            # buying past what confirmation allows. Without this, a gate
+            # failure also drags the target down to the fallback band's
+            # equity, and because the target is applied unconditionally below,
+            # that reads as a SELL of whatever is already held above it — i.e.
+            # the gate liquidates at the bottom, which is the opposite of its
+            # purpose. With the ratchet on, a gate-induced fallback floors the
+            # target at the current holding: it can block an increase, never
+            # mandate a decrease. Genuine price-driven harvests (no gate
+            # involved) are untouched.
+            if gate_ratchet and gate_blocked and eff_eq_frac < held_eq_frac:
+                eff_eq_frac = held_eq_frac
+                if whipsaw == "glide":
+                    eq_level = held_eq_frac
 
             # ── Harvest mode overrides (only affect sells, not buys) ──
             if eff_eq_frac < held_eq_frac:
