@@ -84,3 +84,63 @@ treat the worst-case column as weak evidence.
   independent observations.
 - Measured at exactly year 10; a different end date changes the ranking.
 - Contribution dates are anniversaries of the start, not chosen.
+
+---
+
+# Addendum — monthly contributions and depth-tilted direction
+
+Tests whether 72 contribution dates instead of 6 rescues the depth idea, and
+whether directing *new* money by depth (no reallocation, hence no tax) works
+where reallocating the book did not. Same 103 rolling starts, ₹60L total,
+measured at year 10.
+
+| policy | median | mean | worst |
+|---|---|---|---|
+| monthly fixed 65/35 | 1,26,50,664 | 1,25,72,219 | 96,86,151 |
+| monthly fixed 75/25 | 1,31,75,976 | 1,30,86,886 | 96,37,553 |
+| monthly fixed 100/0 | 1,44,32,476 | 1,43,71,635 | 93,65,344 |
+| **annual fixed 65/35** | **1,32,42,993** | 1,31,64,527 | 1,00,79,802 |
+| **annual fixed 100/0** | **1,53,88,756** | 1,51,48,830 | 97,63,750 |
+| monthly tilt 65→100 @ −10% | 1,27,35,067 | 1,26,02,513 | 96,75,172 |
+| monthly tilt 65→100 @ −15% | 1,27,13,887 | 1,26,07,738 | 96,86,151 |
+| monthly park-until −10% | 1,41,88,425 | 1,40,70,868 | 91,61,820 |
+
+## Depth-tilted contribution: no edge
+Directing each monthly contribution entirely to equity when price is below the
+trigger, versus splitting it at the target weight, wins **57/103 (55%)** at −10%
+and **43/103 (42%)** at −15%. A coin flip that reverses sign with the trigger —
+noise, not signal. Note this policy has **no tax cost at all** (nothing is sold),
+so the earlier tax leak was not what was hiding an edge.
+
+## Parking cash for a dip: loses
+"Park-until −10%" appears to beat monthly 65/35 by 98%, but it is an
+**all-equity** policy (parked cash deploys entirely to equity, no debt sleeve, no
+rebalance). Against its correct benchmark:
+
+| | median | worst | head-to-head |
+|---|---|---|---|
+| park until −10% dip | 1,41,88,425 | 91,61,820 | **19/103 (18%)** |
+| just buy monthly (100/0) | 1,44,32,476 | 93,65,344 | — |
+
+Waiting for the dip loses 82% of the time, gives up 1.7% of median outcome, and
+has the worse worst case. The cost of sitting in cash exceeds the benefit of the
+entry price.
+
+## Annual beats monthly (time in market)
+
+| allocation | annual | monthly | annual wins |
+|---|---|---|---|
+| 65/35 | 1,32,42,993 | 1,26,50,664 | 99/103 (96%), +4.7% |
+| 100/0 | 1,53,88,756 | 1,44,32,476 | 99/103 (96%), +6.6% |
+
+Contributing the full ₹10L at the start of each year beat spreading it monthly
+96% of the time. This is drift, not skill: earlier money compounds longer and
+this market rose. **Sample-dependent** — over a flat or falling decade monthly
+averaging would win. It held across all 103 windows here, including 2008, but
+that is one market.
+
+## Practical conclusion
+Invest each year's ₹10 lakh as a lump when it is available, at the chosen equity
+weight, rebalanced yearly. Do not hold it back for a better entry price, and do
+not tilt it by distance from the 200 EMA. If monthly contribution suits cash flow
+better, it costs roughly 5% of the final outcome.
