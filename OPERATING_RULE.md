@@ -66,5 +66,29 @@ it raises expected return.
   on 2–4 independent events.
 - No permanently-impaired cycle exists in Indian data; a Japan-1989 path is
   untested.
-- Open question not yet examined: the 42% midcap weight. Midcap fell −69.6% vs
-  Nifty −59.9% in 2008 and −24.8% vs −15.8% in cy2024.
+## Midcap weight — resolved, keep 42%
+
+Earlier note flagged the 42% midcap weight as a likely drag because midcap falls
+harder in individual corrections. **That was wrong at the portfolio level.**
+
+| midcap share | MODERN CAGR / DD | 2008 CAGR / DD |
+|---|---|---|
+| 0% | 8.85% / −29.0% | 10.07% / −44.8% |
+| 30% | 9.65% / −28.5% | 10.64% / −48.4% |
+| **42% (current)** | **9.95% / −28.3%** | **10.82% / −49.8%** |
+| 60% | 10.41% / −28.0% | 11.05% / −51.9% |
+| 100% | 11.42% / −30.2% | 11.38% / −56.4% |
+
+Return rises with midcap weight in both windows (underlying indices: Nifty 9.60%
+vs Midcap 12.90% modern; 8.75% vs 10.61% across 2008). Portfolio drawdown is
+almost flat in the modern window — the two sleeves do not bottom together — and
+the cost appears only in severe crashes, where it is steady and material.
+
+42% sits near the point where the trade stops being favourable either way: going
+to 60% buys +0.23pp of 2008 CAGR for +2.1pp of drawdown; going to 30% saves
+1.4pp of 2008 drawdown for −0.30pp of modern CAGR. **Keep 42%.**
+
+Caveats: the modern window was an exceptional stretch for Indian midcaps (a
+3.3pp annual edge over Nifty) and is unlikely to repeat; if it narrows the
+drawdown cost remains while the return advantage shrinks. Index midcap returns
+also ignore liquidity and impact costs.
