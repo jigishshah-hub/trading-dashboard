@@ -3074,55 +3074,136 @@ with tab_thesis:
     # news is already classified thesis-threatening). This stops positive news that
     # merely shares a subject word (e.g. "RERA registration", "demerger approved")
     # from firing a killer whose actual condition is the opposite.
-    ADVERSE = frozenset({
+    # Tiered adverse lexicons. STRONG terms are unambiguous thesis negatives -> red
+    # trigger. SOFT terms are context-dependent (below/miss/decline) -> amber review,
+    # never a confident red on their own.
+    STRONG_ADVERSE = frozenset({
         "withdrawn","withdraw","withdrawal","suspend","suspended","suspension",
-        "abandon","abandoned","delay","delayed","cancel","cancelled","cancellation",
-        "terminate","terminated","default","defaulted","fraud","fraudulent","probe",
-        "raid","raids","search","searches","charge","charged","chargesheet","fir",
-        "arrest","arrested","freeze","frozen","freezing","resign","resigned",
-        "resignation","qualified","qualification","adverse","downgrade","downgraded",
-        "below","miss","missed","decline","declined","fell","fall","drop","dropped",
-        "weak","weaker","negative","loss","losses","pledge","pledged","pledging",
-        "stress","investigation","penalty","penalised","penalized","insolvency",
-        "winding","litigation","lawsuit","dispute","dilution","delisting","shortfall",
-        "breach","violation","lapse","impairment","writeoff","provision","npa",
-        "recall","scam","halt","halted","exit","slump","slowdown","warning","fine",
+        "abandon","abandoned","cancel","cancelled","cancellation","terminate",
+        "terminated","default","defaulted","fraud","fraudulent","probe","raid",
+        "raids","chargesheet","fir","arrest","arrested","freeze","frozen","freezing",
+        "resign","resigned","resignation","qualification","disqualified","downgrade",
+        "downgraded","insolvency","winding","litigation","lawsuit","delisting",
+        "impairment","scam","penalty","penalised","penalized","investigation","npa",
+    })
+    SOFT_ADVERSE = frozenset({
+        "delay","delayed","below","miss","missed","decline","declined","fell","fall",
+        "drop","dropped","weaker","negative","loss","losses","stress","dispute",
+        "dilution","shortfall","breach","violation","lapse","recall","halt","halted",
+        "slump","slowdown","warning","fine","cut","pressure","concern","provision",
+        "pledge","pledged","pledging",
+    })
+    # Generic label tokens that don't reliably identify a subject in news text.
+    # Killers built only from these (revenue/margin/etc.) simply won't news-match,
+    # which is honest: those are fundamentals, confirmed from filings not headlines.
+    STOPTOKENS = frozenset({
+        "revenue","margin","ebitda","roce","capex","debt","order","guidance",
+        "status","report","days","concentration","result","results","update",
+        "growth","target","ratio","level","plan","plans","weak",
     })
 
     def _material_news(ticker):
         return [n for n in D["news"]
                 if n.get("ticker") == ticker and n.get("severity_tag") != "routine update"]
 
+    # Favorable-signal lexicon: subject-matched news carrying one of these (and no
+    # adverse word) is thesis-SUPPORTIVE, not a caution. Stops a demerger-APPROVAL
+    # from showing amber under a demerger-ABANDON killer.
+    POSITIVE = frozenset({
+        "approve", "approved", "approves", "approval", "complete", "completed",
+        "completion", "grant", "granted", "receipt", "received", "registration",
+        "registered", "secured", "secures", "award", "awarded", "wins", "won",
+        "commission", "commissioned", "launch", "launched", "upgrade", "upgraded",
+        "sanction", "sanctioned", "allotted", "bagged", "cleared", "clearance",
+        "resolved", "progress", "progresses", "on-track", "ontrack", "record",
+        "strong", "beats", "robust", "surge", "surges", "jump", "jumps", "rise",
+    })
+
+    def _tokens(text):
+        """Word-level tokens (lowercased). Whole-word matching downstream prevents
+        substring bleed like 'ed' inside 'reduced' or 'rera' inside 'overall'."""
+        out, cur = set(), []
+        for ch in text.lower():
+            if ch.isalnum():
+                cur.append(ch)
+            else:
+                if cur:
+                    out.add("".join(cur)); cur = []
+        if cur:
+            out.add("".join(cur))
+        return out
+
+    def _subject_present(subj, toks):
+        """Match a subject token as a whole word, allowing light inflection
+        (pledge -> pledged/pledging: term + up to 3 trailing chars). No substring bleed."""
+        for s in subj:
+            if s in toks:
+                return True
+            for t in toks:
+                if t.startswith(s) and 0 < len(t) - len(s) <= 3:
+                    return True
+        return False
+
+    def _lex_hit(lexicon, toks):
+        """Whole-word lexicon match with de-stemming, so verb inflections
+        (resigns -> resign, approves -> approve, concerns -> concern) are caught."""
+        for t in toks:
+            if t in lexicon:
+                return True
+            for suf in ("s", "es", "ed", "ing", "d"):
+                if t.endswith(suf) and len(t) - len(suf) >= 3 and t[:-len(suf)] in lexicon:
+                    return True
+        return False
+
     def _classify(killer, mnews):
-        """Return (state, matched_news). state in trigger|related|clear.
-        trigger = subject present AND (adverse word OR thesis-threatening severity).
-        related = subject present in material news, but no adverse signal.
-        clear   = no subject mention in material news."""
-        subj = [t for t in (killer.get("label") or "").lower().split("_") if len(t) >= 3]
-        related_hit = None
+        """Precision-first / never-assert. Return (state, matched_news):
+        trigger    = subject + a STRONG adverse term, or thesis-threatening severity.
+        related    = subject + a SOFT adverse term, or subject alone (ambiguous -> review).
+        supportive = subject + a favorable term and no adverse (thesis-positive).
+        clear      = subject not reliably present in material news.
+        Subject tokens are >=4 chars and exclude generic metric words (STOPTOKENS),
+        so fundamentals-type killers (revenue/margin/etc.) never news-match."""
+        subj = [t for t in (killer.get("label") or "").lower().split("_")
+                if len(t) >= 4 and t not in STOPTOKENS]
+        if not subj:
+            return "clear", None
+        review_hit = None
+        supportive_hit = None
         for n in mnews:
-            txt = f"{n.get('headline','')} {n.get('body_snippet','')} {n.get('severity_reasoning','')}".lower()
-            if subj and any(s in txt for s in subj):
-                adverse = n.get("severity_tag") == "thesis-threatening" or any(a in txt for a in ADVERSE)
-                if adverse:
-                    return "trigger", n
-                if related_hit is None:
-                    related_hit = n
-        return ("related", related_hit) if related_hit else ("clear", None)
+            toks = _tokens(f"{n.get('headline','')} {n.get('body_snippet','')} {n.get('severity_reasoning','')}")
+            if not _subject_present(subj, toks):
+                continue
+            if n.get("severity_tag") == "thesis-threatening" or _lex_hit(STRONG_ADVERSE, toks):
+                return "trigger", n
+            if _lex_hit(SOFT_ADVERSE, toks):
+                if review_hit is None:
+                    review_hit = n
+            elif _lex_hit(POSITIVE, toks):
+                if supportive_hit is None:
+                    supportive_hit = n
+            elif review_hit is None:
+                review_hit = n
+        if review_hit:
+            return "related", review_hit
+        if supportive_hit:
+            return "supportive", supportive_hit
+        return "clear", None
 
     def _assess(ticker):
         kl = killers_by_ticker.get(ticker, [])
         mnews = _material_news(ticker)
-        trig, rel, clr = [], [], []
+        trig, rel, sup, clr = [], [], [], []
         for k in kl:
             state, matched = _classify(k, mnews)
             if state == "trigger":
                 trig.append((k, matched))
             elif state == "related":
                 rel.append((k, matched))
+            elif state == "supportive":
+                sup.append((k, matched))
             else:
                 clr.append(k)
-        return kl, trig, rel, clr
+        return kl, trig, rel, sup, clr
 
     def _news_line(n, color="#888"):
         d = short_date(n.get("published_at")) or ""
@@ -3160,7 +3241,7 @@ with tab_thesis:
         st.markdown(
             '<div style="padding:10px 14px;margin:6px 0;background:rgba(239,68,68,.07);'
             'border-left:3px solid #ef4444;border-radius:5px;font-size:13px">'
-            '\u26A0\uFE0F <b>Thesis killer triggered</b> \u00b7 ' + " \u00b7 ".join(alerts) +
+            '\u26A0\uFE0F <b>Possible thesis-killer trigger \u2014 confirm</b> \u00b7 ' + " \u00b7 ".join(alerts) +
             '<div style="font-size:11px;color:#888;margin-top:3px">Open the Research Library below for detail.</div></div>',
             unsafe_allow_html=True)
 
@@ -3174,7 +3255,7 @@ with tab_thesis:
         has_material = any(n.get("severity_tag") == "material change" for n in ticker_news)
         snap = next((s for s in D["fundsnap"] if s.get("ticker") == ticker), None)
         note = notes_by_ticker.get(ticker)
-        kl, trig, rel, clr = assess_cache.get(ticker) or _assess(ticker)
+        kl, trig, rel, sup, clr = assess_cache.get(ticker) or _assess(ticker)
         below_stop = p["cmp"] <= p["stop"] and p["stop"] > 0
         if below_stop:
             tech = "\U0001F534 STOP"
@@ -3206,7 +3287,7 @@ with tab_thesis:
         })
     if hold_rows:
         st.dataframe(pd.DataFrame(hold_rows), use_container_width=True, hide_index=True)
-        st.caption("Killers = \U0001F534 triggered \u00b7 \U0001F7E1 related news \u00b7 \U0001F7E2 clear, over total active.")
+        st.caption("Killers = \U0001F534 possible trigger (confirm) \u00b7 \U0001F7E1 review \u00b7 \U0001F7E2 clear/supportive, over total active. News matches are keyword candidates \u2014 always confirm against the source before acting.")
     else:
         st.caption("No open positions.")
 
@@ -3235,7 +3316,7 @@ with tab_thesis:
             lib_rows = []
             for t in lib_tickers:
                 note = notes_by_ticker.get(t, {})
-                kl, trig, rel, clr = assess_cache.get(t) or _assess(t)
+                kl, trig, rel, sup, clr = assess_cache.get(t) or _assess(t)
                 if only_flag and not (trig or rel):
                     continue
                 if q and q not in t.lower() and q not in (note.get("company", "") or "").lower():
@@ -3263,7 +3344,7 @@ with tab_thesis:
             st.markdown("**Open a note**")
             sel = st.selectbox("Stock", lib_tickers, key="lib_stock", label_visibility="collapsed")
             note = notes_by_ticker.get(sel)
-            kl, trig, rel, clr = assess_cache.get(sel) or _assess(sel)
+            kl, trig, rel, sup, clr = assess_cache.get(sel) or _assess(sel)
             if note:
                 vc1, vc2, vc3, vc4 = st.columns(4)
                 vc1.metric("Verdict", note.get("analyst_verdict") or "\u2014")
@@ -3279,12 +3360,16 @@ with tab_thesis:
                 st.markdown("##### Thesis Killers")
                 for k, matched in trig:
                     _card(k.get("label", ""), k.get("description", ""), "#ef4444",
-                          "rgba(239,68,68,.06)", "\u26A0\uFE0F TRIGGER \u2014 REVIEW",
+                          "rgba(239,68,68,.06)", "\u26A0\uFE0F POSSIBLE TRIGGER \u2014 CONFIRM",
                           _news_line(matched, "#b23b3b") if matched else "")
                 for k, matched in rel:
                     _card(k.get("label", ""), k.get("description", ""), "#f59e0b",
-                          "rgba(245,158,11,.05)", "\U0001F50E related news",
+                          "rgba(245,158,11,.05)", "\U0001F50E review — unconfirmed",
                           _news_line(matched, "#8a6d1a") if matched else "")
+                for k, matched in sup:
+                    _card(k.get("label", ""), k.get("description", ""), "#3f9142",
+                          "rgba(63,145,66,.05)", "\U0001F7E2 supportive news",
+                          _news_line(matched, "#2f6f4f") if matched else "")
                 if clr:
                     chips = " \u00b7 ".join(
                         f'<span style="font-family:monospace;font-size:11px;color:#3f9142">{k.get("label","")}</span>'
