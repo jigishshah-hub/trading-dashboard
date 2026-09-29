@@ -3058,9 +3058,9 @@ with tab_perf:
 # ═══════════════════════════════════════════════════════════
 with tab_thesis:
     st.markdown("#### Investment Thesis Monitor")
-    st.caption("Separate business thesis from price movement. Research-backed thesis killers are cross-checked against incoming news.")
+    st.caption("Business thesis vs price. Research-backed thesis killers are cross-checked against material news \u2014 a killer only flags when its subject appears alongside an adverse signal.")
 
-    # Index the research repository (research_notes / thesis_killers / monitoring_checklist)
+    # Index the research repository
     notes_by_ticker = {r["ticker"]: r for r in D["research_notes"]}
     killers_by_ticker = {}
     for k in D["thesis_killers"]:
@@ -3069,15 +3069,87 @@ with tab_thesis:
     for m in D["monitoring_checklist"]:
         monitors_by_ticker.setdefault(m["ticker"], []).append(m)
 
-    def _killer_hits(killer, ticker_news):
-        """Heuristic cross-reference: match a thesis-killer label's word tokens against news text."""
-        toks = [t for t in (killer.get("label") or "").lower().split("_") if len(t) >= 4]
-        out = []
-        for n in ticker_news:
+    # Generic adverse-signal lexicon: words that indicate a thesis-negative event.
+    # A killer flags only when its subject AND an adverse signal both appear (or the
+    # news is already classified thesis-threatening). This stops positive news that
+    # merely shares a subject word (e.g. "RERA registration", "demerger approved")
+    # from firing a killer whose actual condition is the opposite.
+    ADVERSE = frozenset({
+        "withdrawn","withdraw","withdrawal","suspend","suspended","suspension",
+        "abandon","abandoned","delay","delayed","cancel","cancelled","cancellation",
+        "terminate","terminated","default","defaulted","fraud","fraudulent","probe",
+        "raid","raids","search","searches","charge","charged","chargesheet","fir",
+        "arrest","arrested","freeze","frozen","freezing","resign","resigned",
+        "resignation","qualified","qualification","adverse","downgrade","downgraded",
+        "below","miss","missed","decline","declined","fell","fall","drop","dropped",
+        "weak","weaker","negative","loss","losses","pledge","pledged","pledging",
+        "stress","investigation","penalty","penalised","penalized","insolvency",
+        "winding","litigation","lawsuit","dispute","dilution","delisting","shortfall",
+        "breach","violation","lapse","impairment","writeoff","provision","npa",
+        "recall","scam","halt","halted","exit","slump","slowdown","warning","fine",
+    })
+
+    def _material_news(ticker):
+        return [n for n in D["news"]
+                if n.get("ticker") == ticker and n.get("severity_tag") != "routine update"]
+
+    def _classify(killer, mnews):
+        """Return (state, matched_news). state in trigger|related|clear.
+        trigger = subject present AND (adverse word OR thesis-threatening severity).
+        related = subject present in material news, but no adverse signal.
+        clear   = no subject mention in material news."""
+        subj = [t for t in (killer.get("label") or "").lower().split("_") if len(t) >= 3]
+        related_hit = None
+        for n in mnews:
             txt = f"{n.get('headline','')} {n.get('body_snippet','')} {n.get('severity_reasoning','')}".lower()
-            if toks and any(t in txt for t in toks):
-                out.append(n)
-        return out
+            if subj and any(s in txt for s in subj):
+                adverse = n.get("severity_tag") == "thesis-threatening" or any(a in txt for a in ADVERSE)
+                if adverse:
+                    return "trigger", n
+                if related_hit is None:
+                    related_hit = n
+        return ("related", related_hit) if related_hit else ("clear", None)
+
+    def _assess(ticker):
+        kl = killers_by_ticker.get(ticker, [])
+        mnews = _material_news(ticker)
+        trig, rel, clr = [], [], []
+        for k in kl:
+            state, matched = _classify(k, mnews)
+            if state == "trigger":
+                trig.append((k, matched))
+            elif state == "related":
+                rel.append((k, matched))
+            else:
+                clr.append(k)
+        return kl, trig, rel, clr
+
+    def _news_line(n, color="#888"):
+        d = short_date(n.get("published_at")) or ""
+        sev = n.get("severity_tag", "")
+        hl = n.get("headline", "")
+        snip = (n.get("body_snippet") or n.get("severity_reasoning") or "")[:150]
+        url = n.get("url") or ""
+        link = (f' <a href="{url}" target="_blank" style="color:#2563eb;text-decoration:none">open \u2197</a>'
+                if url.startswith("http") else "")
+        meta = " \u00b7 ".join(x for x in [d, sev] if x)
+        snip_html = f'<br><span style="color:#999">{snip}</span>' if snip else ""
+        return (f'<div style="font-size:11.5px;color:{color};margin-top:5px;line-height:1.45">'
+                f'\u21B3 <b>{hl}</b>{link}'
+                f'<br><span style="color:#999">{meta}</span>{snip_html}</div>')
+
+    # ── Portfolio thesis health strip ──
+    researched_pos = [p for p in sorted(positions, key=lambda x: x["weight"], reverse=True)
+                      if p["ticker"] in notes_by_ticker or p["ticker"] in killers_by_ticker]
+    tot_trig = tot_rel = 0
+    for p in researched_pos:
+        _, t, r, _c = _assess(p["ticker"])
+        tot_trig += len(t)
+        tot_rel += len(r)
+    hs1, hs2, hs3 = st.columns(3)
+    hs1.metric("Researched positions", len(researched_pos))
+    hs2.metric("Killers triggered", tot_trig, delta="review" if tot_trig else None, delta_color="inverse")
+    hs3.metric("Related news to check", tot_rel)
 
     # ── Summary table ──
     thesis_rows = []
@@ -3088,8 +3160,7 @@ with tab_thesis:
         has_material = any(n.get("severity_tag") == "material change" for n in ticker_news)
         snap = next((s for s in D["fundsnap"] if s.get("ticker") == ticker), None)
         note = notes_by_ticker.get(ticker)
-        active_killers = killers_by_ticker.get(ticker, [])
-        flagged = [k for k in active_killers if _killer_hits(k, ticker_news)]
+        kl, trig, rel, clr = _assess(ticker)
 
         if p["cmp"] <= p["stop"] and p["stop"] > 0:
             tech = "\U0001F534 STOP"
@@ -3098,15 +3169,19 @@ with tab_thesis:
         else:
             tech = "\U0001F7E2 Positive"
 
-        if has_threat or flagged:
+        if has_threat or trig:
             overall = "\U0001F534 Review"
-        elif has_material or (p["cmp"] <= p["stop"] and p["stop"] > 0):
+        elif has_material or rel or (p["cmp"] <= p["stop"] and p["stop"] > 0):
             overall = "\U0001F7E1 Review"
         else:
             overall = "\U0001F7E2 Intact"
 
-        if active_killers:
-            killers_cell = f"\u26A0\uFE0F {len(flagged)}/{len(active_killers)}" if flagged else str(len(active_killers))
+        if trig:
+            killers_cell = f"\U0001F534 {len(trig)}/{len(kl)}"
+        elif rel:
+            killers_cell = f"\U0001F7E1 {len(rel)}/{len(kl)}"
+        elif kl:
+            killers_cell = f"\U0001F7E2 {len(kl)}"
         else:
             killers_cell = "\u2014"
 
@@ -3122,11 +3197,11 @@ with tab_thesis:
         })
 
     st.dataframe(pd.DataFrame(thesis_rows), use_container_width=True, hide_index=True)
-    st.caption("Killers = flagged / total active thesis killers. \u26A0\uFE0F means a recent news item may match a thesis killer.")
+    st.caption("Killers = \U0001F534 triggered \u00b7 \U0001F7E1 related news \u00b7 \U0001F7E2 clear, over total active. Triggered means the killer's subject appears with an adverse signal in material news.")
 
     st.divider()
 
-    # ── Thesis Killer Watch (research-backed, cross-referenced with news) ──
+    # ── Thesis Killer Watch ──
     st.markdown("#### \U0001F3AF Thesis Killer Watch")
     researched = [p["ticker"] for p in sorted(positions, key=lambda x: x["weight"], reverse=True)
                   if p["ticker"] in notes_by_ticker or p["ticker"] in killers_by_ticker]
@@ -3139,7 +3214,7 @@ with tab_thesis:
     else:
         sel = st.selectbox("Stock", researched, key="tk_stock")
         note = notes_by_ticker.get(sel)
-        sel_news = [n for n in D["news"] if n.get("ticker") == sel]
+        kl, trig, rel, clr = _assess(sel)
 
         if note:
             vc1, vc2, vc3, vc4 = st.columns(4)
@@ -3151,35 +3226,53 @@ with tab_thesis:
             if note.get("primary_risk"):
                 st.caption(f"**Primary risk:** {note['primary_risk']}")
 
-        active_killers = killers_by_ticker.get(sel, [])
-        if active_killers:
-            st.markdown("##### Thesis Killers")
-            for k in active_killers:
-                hits = _killer_hits(k, sel_news)
-                if hits:
-                    border, bg, tag = "#ef4444", "rgba(239,68,68,.05)", "\u26A0\uFE0F POSSIBLE MATCH"
-                    hit_html = f'<div style="font-size:11px;color:#b23b3b;margin-top:4px">\u21B3 {hits[0].get("headline","")}</div>'
-                else:
-                    border, bg, tag = "#3f9142", "rgba(63,145,66,.04)", "\U0001F7E2 clear"
-                    hit_html = ""
-                st.markdown(
-                    f'<div style="padding:8px 12px;margin:4px 0;background:{bg};border-left:3px solid {border};border-radius:4px">'
-                    f'<span style="font-family:monospace;font-size:11px;color:#888">[{k.get("label","")}]</span> '
-                    f'<span style="font-size:13px">{k.get("description","")}</span> '
-                    f'<span style="font-size:10px;color:{border};font-weight:700"> {tag}</span>'
-                    f'{hit_html}</div>', unsafe_allow_html=True)
-        else:
+        if not kl:
             st.caption("No active thesis killers for this stock.")
+        else:
+            st.markdown("##### Thesis Killers")
+
+            def _card(label, desc, border, bg, tag, news_html=""):
+                st.markdown(
+                    f'<div style="padding:9px 12px;margin:5px 0;background:{bg};'
+                    f'border-left:3px solid {border};border-radius:5px">'
+                    f'<span style="font-family:monospace;font-size:11px;color:#888">[{label}]</span> '
+                    f'<span style="font-size:13px">{desc}</span> '
+                    f'<span style="font-size:10px;color:{border};font-weight:700;white-space:nowrap">{tag}</span>'
+                    f'{news_html}</div>', unsafe_allow_html=True)
+
+            for k, matched in trig:
+                _card(k.get("label", ""), k.get("description", ""), "#ef4444",
+                      "rgba(239,68,68,.06)", "\u26A0\uFE0F TRIGGER \u2014 REVIEW",
+                      _news_line(matched, "#b23b3b") if matched else "")
+            for k, matched in rel:
+                _card(k.get("label", ""), k.get("description", ""), "#f59e0b",
+                      "rgba(245,158,11,.05)", "\U0001F50E related news",
+                      _news_line(matched, "#8a6d1a") if matched else "")
+            if clr:
+                chips = " \u00b7 ".join(
+                    f'<span style="font-family:monospace;font-size:11px;color:#3f9142">{k.get("label","")}</span>'
+                    for k in clr)
+                st.markdown(
+                    f'<div style="padding:8px 12px;margin:5px 0;background:rgba(63,145,66,.04);'
+                    f'border-left:3px solid #3f9142;border-radius:5px;font-size:12px">'
+                    f'<span style="color:#3f9142;font-weight:700">\U0001F7E2 Clear</span> \u00b7 {chips}</div>',
+                    unsafe_allow_html=True)
 
         monitors = monitors_by_ticker.get(sel, [])
         if monitors:
             st.markdown("##### Monitoring Checklist")
+            freq_col = {"QUARTERLY": "#2f6f4f", "EVENT": "#5b4bb0", "MONTHLY": "#b4690e", "ANNUAL": "#2563eb"}
             order = {"QUARTERLY": 0, "EVENT": 1, "MONTHLY": 2, "ANNUAL": 3}
             for m in sorted(monitors, key=lambda x: order.get(x.get("frequency"), 9)):
+                fq = m.get("frequency", "")
+                col = freq_col.get(fq, "#666")
                 st.markdown(
-                    f'<div style="padding:4px 0;font-size:13px">'
-                    f'<span style="display:inline-block;min-width:82px;font-size:10px;font-weight:700;color:#5b4bb0">{m.get("frequency","")}</span>'
-                    f'<span style="font-family:monospace;font-size:11px;color:#888">{m.get("label","")}</span> \u2014 {m.get("description","")}</div>',
+                    f'<div style="padding:5px 0;font-size:13px;border-bottom:1px solid rgba(0,0,0,.05)">'
+                    f'<span style="display:inline-block;min-width:88px;font-size:9.5px;font-weight:700;'
+                    f'letter-spacing:.04em;color:#fff;background:{col};padding:2px 7px;border-radius:10px;'
+                    f'text-align:center">{fq}</span> '
+                    f'<span style="font-family:monospace;font-size:11px;color:#888">{m.get("label","")}</span> '
+                    f'\u2014 {m.get("description","")}</div>',
                     unsafe_allow_html=True)
 
     st.divider()
