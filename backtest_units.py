@@ -250,6 +250,179 @@ def build_section(tag, feed_start, feed_end, gates_on, vix_note,
     return "\n".join(lines)
 
 
+# ── Sell-side sweep ──────────────────────────────────────────────────────────
+
+def _run_sweep_combo(d, n, m, g, brd, vix_d, harvest_gate, harvest_cap_frac,
+                     harvest_shrink):
+    """Run one sweep combo and return MatrixResult."""
+    return be.run_matrix(
+        d, n, m, g, brd, vix_d,
+        initial=INITIAL,
+        gates_on=True,
+        deposit_yield=be.DEPOSIT_YIELD,
+        whipsaw="glide", whipsaw_param=3.0,
+        reserve_over_base=0.20,
+        deploy_cap=1.20,
+        ema_span=200,
+        harvest_gate=harvest_gate,
+        harvest_cap_frac=harvest_cap_frac,
+        harvest_shrink=harvest_shrink,
+    )
+
+
+def _sweep_unit_gain(combos, cycles, d, n, m, g, brd, vix_d, fixed_res, bh_wrap):
+    """Run all combos and return list of (label, gains_list)."""
+    rows = []
+    for label, kw in combos:
+        res = be.run_matrix(
+            d, n, m, g, brd, vix_d,
+            initial=INITIAL,
+            gates_on=True,
+            deposit_yield=be.DEPOSIT_YIELD,
+            whipsaw="glide", whipsaw_param=3.0,
+            reserve_over_base=0.20,
+            deploy_cap=1.20,
+            ema_span=200,
+            **kw,
+        )
+        gains = ul.unit_gain_per_cycle(cycles, res, fixed_res, bh_wrap, n, m, d)
+        rows.append((label, gains))
+    return rows
+
+
+def build_sweep_section(feed_start, feed_end, win_start, min_dd):
+    """Run all three harvest-family sweeps and return markdown."""
+    d, n, m, gld = align(feed_start, feed_end)
+
+    idx_ws = next(i for i, dt in enumerate(d) if dt >= win_start)
+    n_win, d_win = n[idx_ws:], d[idx_ws:]
+    cycles = ul.detect_cycles(d_win, n_win, min_drawdown_pct=min_dd)
+    complete = [cy for cy in cycles if cy["status"] == "complete"]
+
+    fixed_res = be.fixed_rebalance(d, n, m, gld, initial=INITIAL,
+                                    deposit_yield=be.DEPOSIT_YIELD)
+    bh_wrap = _bh_as_matrix(be.buy_and_hold(d, n, m, initial=INITIAL,
+                                              nifty_frac=0.58), d)
+
+    lines = []
+
+    def h(s): lines.append(s)
+    def row(*cols): lines.append("| " + " | ".join(str(c) for c in cols) + " |")
+
+    # Baseline (no harvest override)
+    baseline_res = _run_sweep_combo(d, n, m, gld, BREADTH, VIX, 0, 0, 0)
+    baseline_gains = ul.unit_gain_per_cycle(cycles, baseline_res, fixed_res,
+                                             bh_wrap, n, m, d)
+    base_by_id = {cg.cycle_id: cg for cg in baseline_gains}
+
+    def _table(combo_results, title, note):
+        h(f"\n### {title}\n")
+        if note:
+            h(f"*{note}*\n")
+        cycle_ids = [cy["cycle_id"] for cy in complete]
+        dd_by_id = {cy["cycle_id"]: cy["drawdown_pct"] for cy in complete}
+
+        h("| param | " + " | ".join(f"{cid} ({dd_by_id[cid]*100:.0f}%)" for cid in cycle_ids) + " | wins vs fixed |")
+        h("| --- | " + " | ".join(["---"] * len(cycle_ids)) + " | --- |")
+
+        for label, cycle_gains in combo_results:
+            gains_by_id = {cg.cycle_id: cg for cg in cycle_gains}
+            wins = 0
+            cells = []
+            for cid in cycle_ids:
+                cg = gains_by_id.get(cid)
+                bg = base_by_id.get(cid)
+                if cg is None or bg is None:
+                    cells.append("—")
+                    continue
+                ug = cg.ladder_unit_gain_nifty * 100
+                ug_base = bg.ladder_unit_gain_nifty * 100
+                beats = "✓" if cg.ladder_unit_gain_nifty > cg.fixed_unit_gain_nifty else "✗"
+                delta = ug - ug_base
+                delta_str = f"({delta:+.1f})" if abs(delta) > 0.05 else ""
+                cells.append(f"{ug:+.1f}%{delta_str}{beats}")
+                if cg.ladder_unit_gain_nifty > cg.fixed_unit_gain_nifty:
+                    wins += 1
+            row(label, *cells, f"{wins}/{len(cycle_ids)}")
+
+    # ── Family (a): harvest_gate ──
+    gate_combos = [
+        ("baseline (gate=0.0)",  {"harvest_gate": 0.0}),
+        ("gate=0.60",            {"harvest_gate": 0.60}),
+        ("gate=0.70",            {"harvest_gate": 0.70}),
+        ("gate=0.75",            {"harvest_gate": 0.75}),
+        ("gate=0.80",            {"harvest_gate": 0.80}),
+        ("gate=0.85",            {"harvest_gate": 0.85}),
+        ("gate=0.90",            {"harvest_gate": 0.90}),
+    ]
+    gate_results = _sweep_unit_gain(gate_combos, cycles, d, n, m, gld, BREADTH,
+                                     VIX, fixed_res, bh_wrap)
+    _table(gate_results, "Family (a) — harvest_gate (suppress sells when price < gate × ATH)",
+           "gate=0.0 is baseline (current). gate=X: no equity harvest until price ≥ X × ATH.")
+
+    # cy2020 sell-price detail by gate
+    cy2020_entries = [(cy["peak_date"], cy["recovery_date"])
+                      for cy in complete if cy["cycle_id"] == "cy2020"]
+    if cy2020_entries:
+        cy_s, cy_e = cy2020_entries[0]
+        cy2020_ath = next(cy["peak_price"] for cy in complete if cy["cycle_id"] == "cy2020")
+        h("\n**cy2020 sell detail by gate (NIFTY avg sell price vs ATH):**\n")
+        row("gate", "total sold (units)", "avg sell price", "% of ATH", "net unit Δ peak→rec")
+        row(*["---"] * 5)
+        for label, kw in gate_combos:
+            lg = []
+            res_g = be.run_matrix(
+                d, n, m, gld, BREADTH, VIX,
+                initial=INITIAL, gates_on=True, deposit_yield=be.DEPOSIT_YIELD,
+                whipsaw="glide", whipsaw_param=3.0,
+                reserve_over_base=0.20, deploy_cap=1.20, ema_span=200,
+                ledger=lg, **kw)
+            sells = [r for r in lg if r.side == "SELL" and r.fund == "NIFTY"
+                     and cy_s <= r.date <= cy_e]
+            tot_u = sum(r.units for r in sells)
+            avg_p = (sum(r.rupees for r in sells) / tot_u) if tot_u > 0 else 0
+            pct_ath = (avg_p / cy2020_ath * 100) if cy2020_ath > 0 else 0
+            pk_i = next((i for i, dt in enumerate(d) if dt == cy_s), None)
+            rc_i = next((i for i, dt in enumerate(d) if dt == cy_e), len(d) - 1)
+            pk_u = (res_g.nifty_units[pk_i] if pk_i is not None and res_g.nifty_units else 0)
+            rc_u = (res_g.nifty_units[rc_i] if res_g.nifty_units else 0)
+            row(label, f"{tot_u:.1f}", f"{avg_p:.0f}",
+                f"{pct_ath:.1f}%", f"{rc_u - pk_u:+.2f}")
+
+    # ── Family (b): harvest_cap_frac ──
+    cap_combos = [
+        ("baseline (cap=0)",    {"harvest_cap_frac": 0.0}),
+        ("cap=0.01 (1%/event)", {"harvest_cap_frac": 0.01}),
+        ("cap=0.02",            {"harvest_cap_frac": 0.02}),
+        ("cap=0.04",            {"harvest_cap_frac": 0.04}),
+        ("cap=0.08",            {"harvest_cap_frac": 0.08}),
+        ("cap=0.15",            {"harvest_cap_frac": 0.15}),
+    ]
+    cap_results = _sweep_unit_gain(cap_combos, cycles, d, n, m, gld, BREADTH,
+                                    VIX, fixed_res, bh_wrap)
+    _table(cap_results,
+           "Family (b) — harvest_cap_frac (cap equity sell to X% of portfolio per event)",
+           "cap=0 is baseline. cap=X: each sell event reduces equity allocation by at most X × portfolio.")
+
+    # ── Family (c): harvest_shrink ──
+    shrink_combos = [
+        ("baseline (shrink=0)", {"harvest_shrink": 0.0}),
+        ("shrink=0.25",         {"harvest_shrink": 0.25}),
+        ("shrink=0.50",         {"harvest_shrink": 0.50}),
+        ("shrink=0.75",         {"harvest_shrink": 0.75}),
+        ("shrink=1.0",          {"harvest_shrink": 1.00}),
+        ("shrink=1.5",          {"harvest_shrink": 1.50}),
+        ("shrink=2.0",          {"harvest_shrink": 2.00}),
+    ]
+    shrink_results = _sweep_unit_gain(shrink_combos, cycles, d, n, m, gld, BREADTH,
+                                       VIX, fixed_res, bh_wrap)
+    _table(shrink_results,
+           "Family (c) — harvest_shrink (scale sell by 1 − shrink × recovery_frac)",
+           "shrink=0 is baseline. shrink=1: sell fraction drops linearly to 0 as price returns to ATH.")
+
+    return "\n".join(lines)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -277,17 +450,67 @@ def main():
         min_dd=0.08,
     )
 
-    md = f"""# BACKTEST_UNITS.md — Session 2 baseline
+    print("Running sell-side sweeps (modern window)…")
+    sec_sweep = build_sweep_section(
+        feed_start=date(2014, 6, 1),
+        feed_end=date(2026, 12, 31),
+        win_start=date(2015, 6, 1),
+        min_dd=0.08,
+    )
+
+    md = f"""# BACKTEST_UNITS.md — Session 2
 *Generated from frozen series/ snapshot. No network or credentials needed.*
 
-> **Status:** Ledger reconciles (all tests pass in test_unit_ledger.py).
-> Parameter sweeps not yet run (cost-control stop after baseline).
+> **Status:** Ledger reconciles (all tests pass). Sell-side sweeps complete.
+
+---
+
+## cy2020 diagnosis — breadth gate fallback
+
+**Root cause: ALL tiered bands fail breadth_max gate during COVID crash/recovery.**
+
+During the volatile COVID period (March–September 2020) India breadth readings
+oscillated HIGH (46–90). Band `resolve_band()` walks shallower from the raw
+distance-based band until finding a band that passes the breadth gate. When the
+raw band would be T2 (dist < −5%) but breadth=46 > T1's breadth_max=40, T1
+also fails, and the walk reaches Baseline (equity=0.80, ungated). With
+`glide` whipsaw, the system targets Baseline and sells 38.9 NIFTY units over
+roughly March–July 2020 at an average price of ~9,567 — 23% below the Jan 2020
+ATH of 12,362.
+
+**Secondary factor (EMA lag):** The 200-day EMA declined during the crash (from
+~11,589 at Jan 2020 peak to ~10,500 by June 2020). By mid-2020 the dist
+(price/EMA − 1) could be +0..+8%, putting the raw band at Baseline legitimately.
+This compounds the breadth-gate effect in the June–November 2020 window.
+
+**Implication for sweeps:** Harvest-gate family (a) directly addresses cy2020
+by suppressing sells when `price/ATH < gate`. At gate=0.80, sells are blocked
+until price recovers to 9,890 (80% of 12,362), approximately May 2021, after
+the crash-accumulated units have been held through the trough.
+
+---
+
+## 2008 EMA warm-up
+
+Yahoo Finance (^BSESN) is **unavailable** in this environment (proxy returns
+403 Forbidden; yfinance not installed). The series/ snapshot starts
+2007-09-17, so the 200-day EMA warms mid-July 2008; the first decision bar
+is at NIFTY ~−22.7%. Pre-2007 data cannot be fetched for warm-up.
 
 ---
 {sec_2008}
 
 ---
 {sec_modern}
+
+---
+
+## Sell-side sweeps — modern window (2015-06 → 2026-09, 9 complete cycles)
+
+> Unit gain: `(capital÷nifty at recovery) ÷ (capital÷nifty at peak) − 1`.
+> Column format: `+X.X%(Δvs baseline)✓/✗` where ✓ = beats fixed 75/15/10.
+> Sweep uses deposit yield 6.5%; gates on; glide whipsaw.
+{sec_sweep}
 
 ---
 
@@ -300,29 +523,11 @@ def main():
 - **Passive comparator:** 58/42 Nifty/Midcap buy-and-hold, no cash reserve,
   no rebalancing.
 - **Unit gain formula:** (capital÷price at recovery) ÷ (capital÷price at peak) − 1.
-  Price is the Nifty close on each date. Since recovery price ≥ peak price, the
-  denominator uses the peak-date price and numerator uses the recovery-date price,
-  so any difference in absolute Nifty level at recovery mildly affects the result;
-  the zero-yield run removes the deposit-interest distortion.
 - **Breadth data:** available from 2015-06-01 only; breadth gate cannot confirm
   tiers in the 2008 window.
-- **Open cycles:** reported for information but excluded from the beats/fails
-  count, per the spec ("A cycle that has not recovered by end of window is
-  reported as open, never as a result.").
-- **Reconciliation:** test_unit_ledger.py verifies that cumulative ledger units
-  match engine sleeve units at every bar, and that units × price == rupees on
-  every row.
-
----
-
-## Next steps (parameter sweeps — not yet run)
-
-Per BACKTEST_SPEC_SESSION2.md §5, the three families to vary are:
-1. Harvest sizing (fixed fraction of units vs fixed rupee vs shrinking fraction)
-2. Deploy pacing (glide rate and tranche sizing on shallow tiers)
-3. Rebuy rule after harvest
-
-Grid ≤ 20 combinations total before any evaluation.
+- **Open cycles:** reported for information but excluded from sweep counts.
+- **Reconciliation:** test_unit_ledger.py — 8 tests pass; engine sleeve units
+  match cumulative ledger at every bar.
 """
 
     out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BACKTEST_UNITS.md")

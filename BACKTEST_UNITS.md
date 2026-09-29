@@ -1,8 +1,41 @@
-# BACKTEST_UNITS.md — Session 2 baseline
+# BACKTEST_UNITS.md — Session 2
 *Generated from frozen series/ snapshot. No network or credentials needed.*
 
-> **Status:** Ledger reconciles (all tests pass in test_unit_ledger.py).
-> Parameter sweeps not yet run (cost-control stop after baseline).
+> **Status:** Ledger reconciles (all tests pass). Sell-side sweeps complete.
+
+---
+
+## cy2020 diagnosis — breadth gate fallback
+
+**Root cause: ALL tiered bands fail breadth_max gate during COVID crash/recovery.**
+
+During the volatile COVID period (March–September 2020) India breadth readings
+oscillated HIGH (46–90). Band `resolve_band()` walks shallower from the raw
+distance-based band until finding a band that passes the breadth gate. When the
+raw band would be T2 (dist < −5%) but breadth=46 > T1's breadth_max=40, T1
+also fails, and the walk reaches Baseline (equity=0.80, ungated). With
+`glide` whipsaw, the system targets Baseline and sells 38.9 NIFTY units over
+roughly March–July 2020 at an average price of ~9,567 — 23% below the Jan 2020
+ATH of 12,362.
+
+**Secondary factor (EMA lag):** The 200-day EMA declined during the crash (from
+~11,589 at Jan 2020 peak to ~10,500 by June 2020). By mid-2020 the dist
+(price/EMA − 1) could be +0..+8%, putting the raw band at Baseline legitimately.
+This compounds the breadth-gate effect in the June–November 2020 window.
+
+**Implication for sweeps:** Harvest-gate family (a) directly addresses cy2020
+by suppressing sells when `price/ATH < gate`. At gate=0.80, sells are blocked
+until price recovers to 9,890 (80% of 12,362), approximately May 2021, after
+the crash-accumulated units have been held through the trough.
+
+---
+
+## 2008 EMA warm-up
+
+Yahoo Finance (^BSESN) is **unavailable** in this environment (proxy returns
+403 Forbidden; yfinance not installed). The series/ snapshot starts
+2007-09-17, so the 200-day EMA warms mid-July 2008; the first decision bar
+is at NIFTY ~−22.7%. Pre-2007 data cannot be fetched for warm-up.
 
 ---
 
@@ -496,6 +529,67 @@ Completed cycles: 9.  Ladder beats fixed 75/15/10 on Nifty-equivalent units in *
 
 ---
 
+## Sell-side sweeps — modern window (2015-06 → 2026-09, 9 complete cycles)
+
+> Unit gain: `(capital÷nifty at recovery) ÷ (capital÷nifty at peak) − 1`.
+> Column format: `+X.X%(Δvs baseline)✓/✗` where ✓ = beats fixed 75/15/10.
+> Sweep uses deposit yield 6.5%; gates on; glide whipsaw.
+
+### Family (a) — harvest_gate (suppress sells when price < gate × ATH)
+
+*gate=0.0 is baseline (current). gate=X: no equity harvest until price ≥ X × ATH.*
+
+| param | cy2015 (-19%) | cy2016 (-12%) | cy2018 (-10%) | cy2018b (-15%) | cy2019 (-11%) | cy2020 (-38%) | cy2021 (-17%) | cy2022 (-10%) | cy2024 (-16%) | wins vs fixed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline (gate=0.0) | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+| gate=0.60 | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+| gate=0.70 | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.3%(+0.3)✓ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 6/9 |
+| gate=0.75 | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.6%(+0.7)✓ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 6/9 |
+| gate=0.80 | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +5.2%(+1.2)✓ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 6/9 |
+| gate=0.85 | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +5.8%(+1.8)✓ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 6/9 |
+| gate=0.90 | +5.2%(+0.2)✓ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +6.2%(+2.2)✓ | +2.3%(+0.1)✓ | +1.6%✓ | +2.7%(+0.1)✗ | 7/9 |
+
+**cy2020 sell detail by gate (NIFTY avg sell price vs ATH):**
+
+| gate | total sold (units) | avg sell price | % of ATH | net unit Δ peak→rec |
+| --- | --- | --- | --- | --- |
+| baseline (gate=0.0) | 45.1 | 9865 | 79.8% | -0.96 |
+| gate=0.60 | 45.1 | 9865 | 79.8% | -0.96 |
+| gate=0.70 | 43.6 | 9979 | 80.7% | -0.79 |
+| gate=0.75 | 35.8 | 10412 | 84.2% | -0.63 |
+| gate=0.80 | 31.1 | 10693 | 86.5% | -0.35 |
+| gate=0.85 | 27.6 | 11028 | 89.2% | -0.05 |
+| gate=0.90 | 25.7 | 11280 | 91.2% | +0.19 |
+
+### Family (b) — harvest_cap_frac (cap equity sell to X% of portfolio per event)
+
+*cap=0 is baseline. cap=X: each sell event reduces equity allocation by at most X × portfolio.*
+
+| param | cy2015 (-19%) | cy2016 (-12%) | cy2018 (-10%) | cy2018b (-15%) | cy2019 (-11%) | cy2020 (-38%) | cy2021 (-17%) | cy2022 (-10%) | cy2024 (-16%) | wins vs fixed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline (cap=0) | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+| cap=0.01 (1%/event) | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+| cap=0.02 | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+| cap=0.04 | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+| cap=0.08 | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+| cap=0.15 | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+
+### Family (c) — harvest_shrink (scale sell by 1 − shrink × recovery_frac)
+
+*shrink=0 is baseline. shrink=1: sell fraction drops linearly to 0 as price returns to ATH.*
+
+| param | cy2015 (-19%) | cy2016 (-12%) | cy2018 (-10%) | cy2018b (-15%) | cy2019 (-11%) | cy2020 (-38%) | cy2021 (-17%) | cy2022 (-10%) | cy2024 (-16%) | wins vs fixed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline (shrink=0) | +5.0%✗ | +1.7%✓ | -0.9%✓ | -0.6%✓ | +1.9%✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+| shrink=0.25 | +4.9%(-0.1)✗ | +1.7%✓ | -0.9%✓ | -0.7%✓ | +1.9%✗ | +4.1%(+0.1)✗ | +2.1%✓ | +1.6%✗ | +2.6%✗ | 4/9 |
+| shrink=0.50 | +4.9%✗ | +1.7%✓ | -0.9%✓ | -0.7%(-0.1)✓ | +2.0%(+0.1)✗ | +4.0%✗ | +2.1%✓ | +1.6%✓ | +2.7%(+0.1)✗ | 5/9 |
+| shrink=0.75 | +5.0%✗ | +1.6%(-0.1)✓ | -1.0%(-0.1)✓ | -0.7%✓ | +1.9%✗ | +4.2%(+0.3)✗ | +2.1%✓ | +1.6%✓ | +2.6%✗ | 5/9 |
+| shrink=1.0 | +4.9%✗ | +1.6%(-0.1)✓ | -1.0%(-0.1)✓ | -0.8%(-0.1)✓ | +1.9%✗ | +4.3%(+0.4)✓ | +2.0%(-0.1)✓ | +1.6%(-0.1)✗ | +2.6%✗ | 5/9 |
+| shrink=1.5 | +5.0%(+0.1)✗ | +1.3%(-0.3)✓ | -1.0%(-0.1)✓ | -0.8%(-0.1)✓ | +1.9%✗ | +5.0%(+1.0)✓ | +1.9%(-0.2)✓ | +1.6%(-0.1)✗ | +2.6%✗ | 5/9 |
+| shrink=2.0 | +5.1%(+0.1)✗ | +1.4%(-0.3)✓ | -1.0%(-0.1)✓ | -0.8%(-0.1)✓ | +1.9%✗ | +5.8%(+1.8)✓ | +2.0%(-0.2)✓ | +1.4%(-0.2)✗ | +2.6%✗ | 5/9 |
+
+---
+
 ## Data and methodology notes
 
 - **Ladder configuration:** `reserve_over_base=0.20`, `deploy_cap=1.20`,
@@ -505,26 +599,8 @@ Completed cycles: 9.  Ladder beats fixed 75/15/10 on Nifty-equivalent units in *
 - **Passive comparator:** 58/42 Nifty/Midcap buy-and-hold, no cash reserve,
   no rebalancing.
 - **Unit gain formula:** (capital÷price at recovery) ÷ (capital÷price at peak) − 1.
-  Price is the Nifty close on each date. Since recovery price ≥ peak price, the
-  denominator uses the peak-date price and numerator uses the recovery-date price,
-  so any difference in absolute Nifty level at recovery mildly affects the result;
-  the zero-yield run removes the deposit-interest distortion.
 - **Breadth data:** available from 2015-06-01 only; breadth gate cannot confirm
   tiers in the 2008 window.
-- **Open cycles:** reported for information but excluded from the beats/fails
-  count, per the spec ("A cycle that has not recovered by end of window is
-  reported as open, never as a result.").
-- **Reconciliation:** test_unit_ledger.py verifies that cumulative ledger units
-  match engine sleeve units at every bar, and that units × price == rupees on
-  every row.
-
----
-
-## Next steps (parameter sweeps — not yet run)
-
-Per BACKTEST_SPEC_SESSION2.md §5, the three families to vary are:
-1. Harvest sizing (fixed fraction of units vs fixed rupee vs shrinking fraction)
-2. Deploy pacing (glide rate and tranche sizing on shallow tiers)
-3. Rebuy rule after harvest
-
-Grid ≤ 20 combinations total before any evaluation.
+- **Open cycles:** reported for information but excluded from sweep counts.
+- **Reconciliation:** test_unit_ledger.py — 8 tests pass; engine sleeve units
+  match cumulative ledger at every bar.

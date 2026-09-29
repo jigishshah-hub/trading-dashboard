@@ -644,6 +644,9 @@ def run_matrix(
     tax: bool = False,
     ema_span: int = 200,
     ledger: list | None = None,
+    harvest_gate: float = 0.0,
+    harvest_cap_frac: float = 0.0,
+    harvest_shrink: float = 0.0,
 ) -> MatrixResult:
     """Allocation-matrix backtest on aligned daily series.
 
@@ -706,6 +709,10 @@ def run_matrix(
     eq_level = 0.80                   # current equity_frac (for glide)
     held_eq_frac = 0.80               # equity_frac we last rebalanced to
 
+    # Harvest-mode state (used when harvest_gate / harvest_cap_frac / harvest_shrink > 0)
+    _ath = nifty[0]        # running all-time-high
+    _trough = nifty[0]     # min price since last ATH
+
     def _charge(amount_cost: float, amount_tax: float):
         """Deduct costs+tax from the reserve first, then debt if reserve empty."""
         nonlocal reserve, debt_val
@@ -726,6 +733,15 @@ def run_matrix(
         if i > 0:
             reserve *= 1 + daily_yield
             debt_val *= 1 + daily_yield
+
+        # ── ATH / trough tracking (needed by all three harvest modes) ──
+        if px_n > _ath:
+            _ath = px_n
+            _trough = px_n
+        else:
+            _trough = min(_trough, px_n)
+        _rec_frac = ((px_n - _trough) / (_ath - _trough)
+                     if _ath > _trough + 1e-6 else 1.0)
 
         if e is not None and e > 0:
             dist = (px_n - e) / e * 100.0
@@ -764,6 +780,32 @@ def run_matrix(
             else:
                 eff_eq_frac = target_eq_frac
                 eq_level = eff_eq_frac
+
+            # ── Harvest mode overrides (only affect sells, not buys) ──
+            if eff_eq_frac < held_eq_frac:
+                # (a) gate: suppress sell entirely until price recovers to gate×ATH
+                if harvest_gate > 0 and px_n < _ath * harvest_gate:
+                    eff_eq_frac = held_eq_frac
+                    if whipsaw == "glide":
+                        eq_level = held_eq_frac
+
+                # (b) cap: limit sell to harvest_cap_frac × portfolio per event
+                elif harvest_cap_frac > 0:
+                    C_now = (nifty_s.value(px_n) + mid_s.value(px_m)
+                             + gold_s.value(px_g) + debt_val + reserve)
+                    max_reduce = harvest_cap_frac * C_now / (1.0 + rob)
+                    capped_frac = max(eff_eq_frac, held_eq_frac - max_reduce)
+                    eff_eq_frac = capped_frac
+                    if whipsaw == "glide":
+                        eq_level = max(eq_level, capped_frac)
+
+                # (c) shrink: scale sell amount by (1 − shrink × recovery_frac)
+                elif harvest_shrink > 0:
+                    scale = max(0.0, 1.0 - harvest_shrink * _rec_frac)
+                    shrunk_frac = held_eq_frac - (held_eq_frac - eff_eq_frac) * scale
+                    eff_eq_frac = shrunk_frac
+                    if whipsaw == "glide":
+                        eq_level = max(eq_level, shrunk_frac)
 
             # ── Rebalance ONLY when the target actually moves ──
             # The tactical ladder is event-driven: it deploys on entering a
