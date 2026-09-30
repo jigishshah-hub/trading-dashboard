@@ -347,6 +347,37 @@ LTCG_RATE = 0.125           # >= 1 year, long-term capital gains
 LTCG_DAYS = 365
 EQUITY_NIFTY_FRAC = 0.58    # equity is 58/42 Nifty/Midcap (the 35/25 core proportion)
 
+# VIX-regime Midcap fraction schedule (fraction of equity sleeve that is Midcap).
+# Derived from 19-yr statistical analysis of optimal Nifty/Midcap split by VIX regime:
+#   VIX <16   (Calm/Normal)  → 100% Midcap in tactical tranche  → keep base 0.42
+#   VIX 16-20 (Elevated)     → Midcap/Nifty split NOT significant (p=0.61) → shift to Nifty
+#   VIX 20-25 (Fear)         → 100% Midcap (significant outperformance returns)
+#   VIX 25-30 (Stress)       → 55% Midcap / 45% Nifty  → slight Nifty tilt
+#   VIX ≥30   (Panic)        → 100% Midcap (fastest recovery)
+# Used only when matrix_backtest(..., use_vix_split=True).
+VIX_MID_FRAC_SCHEDULE: list[tuple[float, float, float]] = [
+    # (vix_lo_inclusive, vix_hi_exclusive, mid_frac)
+    (0.0,  16.0, 1 - EQUITY_NIFTY_FRAC),   # Calm/Normal: base 42% Midcap
+    (16.0, 20.0, 0.00),                      # Elevated dead zone: 0% Midcap → full Nifty
+    (20.0, 25.0, 1 - EQUITY_NIFTY_FRAC),   # Fear: Midcap outperforms, restore base
+    (25.0, 30.0, 0.55),                                      # Stress: 55% Midcap / 45% Nifty
+    (30.0, 1e9,  1 - EQUITY_NIFTY_FRAC),   # Panic: full Midcap recovery
+]
+
+
+def mid_frac_for_vix(vix: float | None) -> float:
+    """Midcap fraction of equity sleeve for a given VIX reading.
+
+    Returns the base (1 - EQUITY_NIFTY_FRAC) when VIX is None (data gap) so
+    the engine does not degrade silently in the absence of VIX data.
+    """
+    if vix is None:
+        return 1 - EQUITY_NIFTY_FRAC
+    for lo, hi, frac in VIX_MID_FRAC_SCHEDULE:
+        if lo <= vix < hi:
+            return frac
+    return 1 - EQUITY_NIFTY_FRAC   # fallback (should not reach)
+
 # Non-equity sleeve caps (fractions of base_ref) used to split the debt/gold
 # pool by spend order in the deploy region. Match the matrix's baseline row
 # (debt 15 / gold 5); debt_first then reproduces the matrix's gold-preserving
@@ -634,8 +665,16 @@ def run_matrix(
     tx_cost_bps: float = 0.0,
     tax: bool = False,
     ema_span: int = 200,
+    use_vix_split: bool = False,
 ) -> MatrixResult:
     """Allocation-matrix backtest on aligned daily series.
+
+    `use_vix_split` — when True, the Nifty/Midcap split within the equity
+    sleeve shifts at each rebalance according to VIX_MID_FRAC_SCHEDULE rather
+    than staying at the fixed EQUITY_NIFTY_FRAC. Statistically backed by 19 yr
+    of daily data: VIX 16–20 is a dead zone for Midcap outperformance (p=0.61);
+    VIX 25–30 calls for a 45/55 Nifty/Midcap tilt; all other regimes restore
+    the base Midcap weight.
 
     `nifty`, `midcap`, `gold` are aligned closes; `breadth`/`vix` are per-date
     lookups for the deploy gate. `reserve_over_base` (rob) is the standby set
@@ -672,8 +711,9 @@ def run_matrix(
     ne0 = 0.20 * base_ref0
     d0_debt, d0_gold = _split_nonequity(ne0, base_ref0, spend_order)
     nifty_s, mid_s, gold_s = _PriceSleeve(), _PriceSleeve(), _PriceSleeve()
-    nifty_s.buy(EQUITY_NIFTY_FRAC * eq0, nifty[0], dates[0])
-    mid_s.buy((1 - EQUITY_NIFTY_FRAC) * eq0, midcap[0], dates[0])
+    _init_mid_f = mid_frac_for_vix(vix.get(dates[0])) if use_vix_split else (1 - EQUITY_NIFTY_FRAC)
+    nifty_s.buy((1 - _init_mid_f) * eq0, nifty[0], dates[0])
+    mid_s.buy(_init_mid_f * eq0, midcap[0], dates[0])
     gold_s.buy(d0_gold, gold[0], dates[0])
     debt_val = d0_debt
     reserve = rob * base_ref0
@@ -762,8 +802,9 @@ def run_matrix(
                 else:
                     ne_val = 0.0
                 tgt_debt, tgt_gold = _split_nonequity(ne_val, base_ref, spend_order)
-                tgt_n = EQUITY_NIFTY_FRAC * tgt_eq
-                tgt_m = (1 - EQUITY_NIFTY_FRAC) * tgt_eq
+                _mid_f = mid_frac_for_vix(vx) if use_vix_split else (1 - EQUITY_NIFTY_FRAC)
+                tgt_n = (1 - _mid_f) * tgt_eq
+                tgt_m = _mid_f * tgt_eq
                 cost = tax_amt = 0.0
 
                 # sells first (raise cash into reserve), then buys draw it down
