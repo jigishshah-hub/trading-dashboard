@@ -3188,7 +3188,30 @@ with tab_perf:
                 if dd < max_dd:
                     max_dd = dd
 
-            st.caption(f"Stock + Cash · {len(sorted_dates)} trading days · Capital: {fmt(initial_capital)}")
+            st.markdown("##### Equity Curve")
+            _run, _rp = [], 0
+            for _v in daily_portfolio:
+                _rp = max(_rp, _v)
+                _run.append(_rp)
+            _line_col = GREEN if current_val >= peak_val else RED
+            fig_eq = go.Figure()
+            fig_eq.add_trace(go.Scatter(
+                x=sorted_dates, y=_run, mode="lines", name="Peak",
+                line=dict(color="rgba(167,106,0,0.55)", width=1, dash="dot"),
+                hovertemplate="peak ₹%{y:,.0f}<extra></extra>"))
+            fig_eq.add_trace(go.Scatter(
+                x=sorted_dates, y=daily_portfolio, mode="lines", name="Portfolio",
+                line=dict(color=_line_col, width=2),
+                hovertemplate="%{x}: ₹%{y:,.0f}<extra></extra>"))
+            fig_eq.update_layout(
+                height=240, margin=dict(l=0, r=0, t=6, b=0),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(tickprefix="₹", gridcolor="rgba(0,0,0,.06)"),
+                xaxis=dict(showgrid=False),
+                legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
+                showlegend=True)
+            st.plotly_chart(fig_eq, use_container_width=True, key="perf_equity_curve")
+            st.caption(f"Stock + Cash · {len(sorted_dates)} trading days · Capital: {fmt(initial_capital)} · gap to the dotted peak line = drawdown")
         else:
             # Fallback: estimate from positions
             realized_pnl = 0
