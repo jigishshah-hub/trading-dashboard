@@ -54,11 +54,23 @@ DEPLOY_TIERS = [
 ]
 
 # (tier, EMA distance trigger, fraction of tactical holding to book)
+# Thresholds calibrated from upside EMA-distance analysis (ema_model.py harvest sweep,
+# 4,451 bars 2009-2026).
+#
+#   +0 to +5%:  Sharpe 0.07 / 0.002 — false-recovery zone; Nifty often fades
+#               back below EMA on first cross (weak-hand selling + re-test).
+#               Don't book yet, just begin trailing.
+#   +5 to +15%: Sharpe 0.16–0.24 — bull run has legs; Midcap fwd +14–22%.
+#               Start trimming gradually at +12% (softening begins there).
+#   +15 to +20%: Sharpe 0.46 peak — strongest bull zone, FOMO momentum valid.
+#               Book 50% at +17% (Sharpe begins declining, neg% rising to 45%).
+#   ≥+20%:      Sharpe flips to -0.34; 61% of bars have negative fwd returns.
+#               This is the hard exit level — book the remaining 75%.
 HARVEST_TIERS = [
-    {"tier": "H1", "threshold": 5.0,  "book_frac": 0.00},   # trail only
-    {"tier": "H2", "threshold": 10.0, "book_frac": 0.25},
-    {"tier": "H3", "threshold": 15.0, "book_frac": 0.50},
-    {"tier": "H4", "threshold": 20.0, "book_frac": 0.75},
+    {"tier": "H1", "threshold":  5.0, "book_frac": 0.00},   # trail only — false-recovery zone
+    {"tier": "H2", "threshold": 12.0, "book_frac": 0.25},   # first trim: momentum confirmed
+    {"tier": "H3", "threshold": 17.0, "book_frac": 0.50},   # second trim: Sharpe declining
+    {"tier": "H4", "threshold": 20.0, "book_frac": 0.75},   # hard exit: fwd returns flip neg
 ]
 
 
