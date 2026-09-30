@@ -1347,12 +1347,10 @@ with tab_cockpit:
         fg_signals = fear_gauges.get("signals_on", 0) if fear_gauges else 0
         fg_conf_label = ""
         if sys_state.startswith("DEPLOY") and fg_signals > 0:
-            if fg_signals == 3:
-                fg_conf_label = " · 🔴 TRIPLE CONFIRMED — max conviction"
-            elif fg_signals == 2:
-                fg_conf_label = " · 🟠 DOUBLE CONFIRMED — enhanced sizing"
+            if fg_signals >= 2:
+                fg_conf_label = " · 🔴 2+ fear gauges — 2× sizing + early fire"
             elif fg_signals == 1:
-                fg_conf_label = " · 🟡 1 fear gauge elevated"
+                fg_conf_label = " · 🟡 1 fear gauge elevated — 1.5× sizing"
 
         # ── Market Regime: Left (Nifty strip + Fear gauges) | Right (Nifty chart) ──
         regime_left, regime_right = st.columns(2)
@@ -1583,12 +1581,12 @@ with tab_cockpit:
 
             # Fear modifier summary
             fg_s = fear_gauges.get("signals_on", 0) if fear_gauges else 0
-            fg_mult = "2×" if fg_s == 3 else "1.5×" if fg_s == 2 else "1×"
+            fg_mult = "2×" if fg_s >= 2 else "1.5×" if fg_s == 1 else "1×"
             st.markdown(
                 f'<div style="font-size:12px;color:#444;line-height:1.7;margin-top:8px">'
                 f'<strong>Fear modifier:</strong> {fg_s}/3 → {fg_mult} allocation<br>'
-                f'<strong>If 2/3:</strong> 1.5× (T1 = 12% not 8%)<br>'
-                f'<strong>If 3/3:</strong> 2× + fires 1% early'
+                f'<strong>If 1/3:</strong> 1.5× (T1 = 12% not 8%)<br>'
+                f'<strong>If 2+/3:</strong> 2× + fires 1% early'
                 f'</div>', unsafe_allow_html=True)
 
             # Capital architecture
@@ -1732,7 +1730,7 @@ with tab_cockpit:
 
                 # Fear modifier pill
                 fg_s_val = fear_gauges.get("signals_on", 0) if fear_gauges else 0
-                fear_label = f"Fear {fg_s_val}/3 → {'2×' if fg_s_val == 3 else '1.5×' if fg_s_val == 2 else '1×'}"
+                fear_label = f"Fear {fg_s_val}/3 → {'2×' if fg_s_val >= 2 else '1.5×' if fg_s_val == 1 else '1×'}"
                 fear_pill = (f'<span style="font-size:10px;padding:1px 5px;border-radius:3px;'
                              f'background:#f3f4f6;color:#6b7280">{fear_label}</span>')
 
@@ -3871,20 +3869,20 @@ with tab_framework:
     st.markdown(
         f'<div class="fw-scroll"><table class="fw-tbl"><thead><tr>'
         f'<th>Tier</th><th>Condition</th><th class="num">EMA</th><th class="num">Breadth</th>'
-        f'<th class="num">Base</th><th class="num">Fear 2/3</th><th class="num">Fear 3/3</th>'
+        f'<th class="num">Base</th><th class="num">Fear 1+</th><th class="num">Fear 2+</th>'
         f'<th class="c">Status</th></tr></thead><tbody>{rows}</tbody></table></div>',
         unsafe_allow_html=True)
     st.caption("Breadth = % of Nifty 200 stocks above their own 200 DMA. "
-               "Fear multipliers are 1.5× at two confirmations, 2× at three.")
+               "Fear multipliers: 1 gauge elevated → 1.5×; 2+ gauges elevated → 2× + fires 1% early.")
 
     # ── Fear Gauge Modifier ──
     _fw_head("Fear Gauge Modifier", "Three independent fear signals — each is binary ON/OFF.")
 
     fear_cols = st.columns(3)
     fear_gauges_def = [
-        ("MOVE Index", "> 120", "US rates volatility → global risk-off"),
-        ("India VIX", "> 20", "Domestic implied volatility spike"),
-        ("Credit Stress", "Spread > 1σ", "IG–Govt spread widens — credit fear"),
+        ("MOVE Index", "≥ 80 (extreme ≥ 100)", "US rates volatility → global risk-off"),
+        ("India VIX", "≥ 20 (extreme ≥ 25)", "Domestic implied volatility spike"),
+        ("Credit Stress", "LQD/HYG ratio ≥ 80th pctile", "IG–Govt spread widens — credit fear"),
     ]
     for i, (name, trigger, desc) in enumerate(fear_gauges_def):
         with fear_cols[i]:
@@ -3896,9 +3894,9 @@ with tab_framework:
     fg_now = fear_gauges.get("signals_on", 0) if fear_gauges else None
     fear_rows = ""
     for label, n, mult, eff, early in [
-        ("0 or 1 of 3", (0, 1), "1×", "8% per tier", "—"),
-        ("2 of 3", (2,), "1.5×", "12% per tier", "—"),
-        ("3 of 3 (Triple)", (3,), "2×", "16% per tier", "+1% early"),
+        ("0 of 3 (none)", (0,), "1×", "8% per tier", "—"),
+        ("1 of 3", (1,), "1.5×", "12% per tier", "—"),
+        ("2+ of 3", (2, 3), "2×", "16% per tier", "+1% early"),
     ]:
         on = fg_now is not None and fg_now in n
         here = '<span class="fw-here">NOW</span>' if on else ""
@@ -3910,7 +3908,7 @@ with tab_framework:
         f'<div class="fw-scroll"><table class="fw-tbl"><thead><tr><th>Confirmations</th><th class="c">Multiplier</th>'
         f'<th class="c">Effective deploy</th><th class="c">Early-fire</th></tr></thead>'
         f'<tbody>{fear_rows}</tbody></table></div>', unsafe_allow_html=True)
-    st.caption("Triple confirmation also fires the next tier 1% early — e.g. T2 at −9% instead of −10%.")
+    st.caption("2+ confirmations also fires the next tier 1% early — e.g. T2 at −9% instead of −10%.")
 
     # ── Harvest Ladder ──
     _fw_head("Harvest Ladder", "Book profits systematically as Nifty rises above its 200 EMA.")
