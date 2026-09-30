@@ -3156,37 +3156,31 @@ with tab_thesis:
         return False
 
     def _classify(killer, mnews):
-        """Precision-first / never-assert. Return (state, matched_news):
-        trigger    = subject + a STRONG adverse term, or thesis-threatening severity.
-        related    = subject + a SOFT adverse term, or subject alone (ambiguous -> review).
-        supportive = subject + a favorable term and no adverse (thesis-positive).
-        clear      = subject not reliably present in material news.
-        Subject tokens are >=4 chars and exclude generic metric words (STOPTOKENS),
-        so fundamentals-type killers (revenue/margin/etc.) never news-match."""
+        """Precision-first / never-assert. A thesis killer is a DOWNSIDE watch, so it
+        only ever attaches a news card when the news is genuinely adverse. Positive or
+        neutral mentions of the same subject do NOT attach to the killer (they stay in
+        the Material News Feed) -- this stops a demerger APPROVAL from showing under a
+        demerger-ABANDON killer.
+        trigger = subject + a STRONG adverse term, or thesis-threatening severity.
+        related = subject + a SOFT adverse term (ambiguous downside -> review).
+        clear   = no adverse news on the subject (incl. positive / neutral mentions).
+        Subject tokens are >=4 chars and exclude generic metric words (STOPTOKENS)."""
         subj = [t for t in (killer.get("label") or "").lower().split("_")
                 if len(t) >= 4 and t not in STOPTOKENS]
         if not subj:
             return "clear", None
         review_hit = None
-        supportive_hit = None
         for n in mnews:
             toks = _tokens(f"{n.get('headline','')} {n.get('body_snippet','')} {n.get('severity_reasoning','')}")
             if not _subject_present(subj, toks):
                 continue
             if n.get("severity_tag") == "thesis-threatening" or _lex_hit(STRONG_ADVERSE, toks):
                 return "trigger", n
-            if _lex_hit(SOFT_ADVERSE, toks):
-                if review_hit is None:
-                    review_hit = n
-            elif _lex_hit(POSITIVE, toks):
-                if supportive_hit is None:
-                    supportive_hit = n
-            elif review_hit is None:
+            if _lex_hit(SOFT_ADVERSE, toks) and review_hit is None:
                 review_hit = n
+            # positive or neutral subject overlap -> not attached to the killer (clear)
         if review_hit:
             return "related", review_hit
-        if supportive_hit:
-            return "supportive", supportive_hit
         return "clear", None
 
     def _assess(ticker):
@@ -3287,7 +3281,7 @@ with tab_thesis:
         })
     if hold_rows:
         st.dataframe(pd.DataFrame(hold_rows), use_container_width=True, hide_index=True)
-        st.caption("Killers = \U0001F534 possible trigger (confirm) \u00b7 \U0001F7E1 review \u00b7 \U0001F7E2 clear/supportive, over total active. News matches are keyword candidates \u2014 always confirm against the source before acting.")
+        st.caption("Killers = \U0001F534 possible trigger (confirm) \u00b7 \U0001F7E1 review \u00b7 \U0001F7E2 clear, over total active. A killer only attaches a news card when the news is adverse; positive/neutral news stays in the Material News Feed. Matches are keyword candidates \u2014 confirm against the source.")
     else:
         st.caption("No open positions.")
 
