@@ -40,7 +40,13 @@ MIN_CASH_FRAC = 0.25        # never deploy more than 75% of tactical reserve
 TRADING_DAYS = 252
 
 DEPLOY_TIERS = [
-    {"tier": 1, "threshold": -5.0,  "breadth_max": 40, "deploy_pct": 8},
+    # Thresholds calibrated from EMA-distance statistical analysis (ema_model.py,
+    # 4,337 bars 2009-2026).  The -5% zone had Sharpe 0.21 (barely above the
+    # always-invested baseline of 0.19); moving T1 to -8% lifts entry into the
+    # confirmed-edge zone (-10 to -5%: Sharpe 0.54) while still catching shallow
+    # corrections.  T2-T5 unchanged — the -15 to -10% zone is the best single
+    # entry (Sharpe 0.88, 86% win-rate) and deeper zones scale monotonically.
+    {"tier": 1, "threshold":  -8.0, "breadth_max": 40, "deploy_pct": 8},
     {"tier": 2, "threshold": -10.0, "breadth_max": 35, "deploy_pct": 8},
     {"tier": 3, "threshold": -15.0, "breadth_max": 30, "deploy_pct": 8},
     {"tier": 4, "threshold": -20.0, "breadth_max": 25, "deploy_pct": 8},
@@ -1173,6 +1179,9 @@ def run_v2(
     ema_span: int = 200,
     harvest_ema_pct: float = 10.0,            # harvest when Nifty ≥ EMA × (1 + pct/100)
     harvest_sigma: float = 2.0,               # harvest when YTD ≥ mean + N × std
+    use_vix_gate: bool = True,                # gate deploy on minimum VIX level
+    vix_gate_t1_t2: float = 20.0,            # T1/T2 require VIX ≥ this (Fear zone)
+    vix_gate_t3_plus: float = 25.0,          # T3/T4/T5 require VIX ≥ this (Stress zone)
 ) -> V2Result:
     """V2 backtest: ₹10L equity core + ₹4L revolving tactical.
 
@@ -1180,6 +1189,10 @@ def run_v2(
     December.  Tactical starts as liquid at CASH_YIELD, deploys on EMA+breadth
     triggers using VIX-regime split, and is harvested in December if the market
     is extended (annual return ≥ mean+2σ OR Nifty ≥ 10% above 200-EMA).
+
+    VIX gate (use_vix_gate=True): prevents deploy when fear is absent.
+    VIX stats analysis found max-Sharpe entries at VIX≥20 (T1/T2) and VIX≥25
+    (T3+).  This eliminates low-VIX noise deploys (e.g. VIX=13.9 Calm zone).
     """
     n = len(dates)
     if not (n == len(nifty) == len(midcap)):
@@ -1280,7 +1293,13 @@ def run_v2(
                     continue
                 gate_ema = ema_dist <= tier["threshold"]
                 gate_br = (not use_breadth) or (br is not None and br <= tier["breadth_max"])
-                if gate_ema and gate_br:
+                # VIX gate: require minimum fear level before deploying
+                if use_vix_gate and vx is not None:
+                    min_vix = vix_gate_t1_t2 if t_num <= 2 else vix_gate_t3_plus
+                    gate_vix = vx >= min_vix
+                else:
+                    gate_vix = True
+                if gate_ema and gate_br and gate_vix:
                     avail = tac_liquid
                     amount = min(daily_tranche, avail)
                     if amount <= 0:
@@ -1298,7 +1317,7 @@ def run_v2(
                         d=d, kind="deploy", tier=f"T{t_num}",
                         ema_dist=round(ema_dist, 2),
                         breadth=br, amount=round(amount, 2),
-                        note=f"VIX={vx:.1f} mid_frac={mf:.0%}" if vx else "VIX=N/A",
+                        note=(f"VIX={vx:.1f} mid_frac={mf:.0%}" if vx else "VIX=N/A"),
                     ))
 
         # ── Mark to market ──────────────────────────────────────────────

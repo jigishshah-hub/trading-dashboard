@@ -4156,8 +4156,14 @@ with tab_backtest:
                     "Tactical (₹ lakh)", 1.0, 500.0, 4.0, 1.0, key="bt_v2_tactical",
                     help="Revolving tactical buffer — liquid until deployed"
                 )
+            bt_v2_vix_gate = st.checkbox(
+                "VIX gate — require min VIX before deploy "
+                "*(T1/T2 need VIX≥20, T3+ need VIX≥25)*",
+                value=True, key="bt_v2_vix_gate",
+                help="Prevents low-fear deploys (VIX<20 Calm/Elevated zones had Sharpe≈0.21 — barely above baseline)"
+            )
         else:
-            bt_v2_core, bt_v2_tactical = 10.0, 4.0
+            bt_v2_core, bt_v2_tactical, bt_v2_vix_gate = 10.0, 4.0, True
 
         nifty_rows = _load_series("^NSEI")
         mid_rows = _load_series(mid_sym) if mid_sym != "^NSEI" else nifty_rows
@@ -4268,6 +4274,7 @@ with tab_backtest:
                     core_initial=bt_v2_core * 100_000,
                     tactical_initial=bt_v2_tactical * 100_000,
                     use_breadth=bt_breadth,
+                    use_vix_gate=bt_v2_vix_gate,
                 )
             except Exception as _e:
                 st.warning(f"V2 backtest failed: {_e}")
