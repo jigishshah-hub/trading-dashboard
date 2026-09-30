@@ -4132,6 +4132,32 @@ with tab_backtest:
                 "Adds a second equity curve so you can compare."
             )
         )
+        bt_v2 = st.checkbox(
+            "V2 model — ₹10L equity core + ₹4L revolving tactical *(experimental)*",
+            value=False, key="bt_v2",
+            help=(
+                "New capital model: ₹10L always deployed as equity (60% Midcap / 40% Nifty), "
+                "rebalanced each December. Separate ₹4L tactical buffer sits in liquid fund "
+                "(6.5%) and deploys on EMA+breadth triggers using VIX-regime split. "
+                "Annual December harvest: if Nifty YTD ≥ mean+2σ OR Nifty ≥ 10% above 200-EMA, "
+                "all tactical positions are booked back to liquid. No cash floor depletion. "
+                "Results shown normalised to ₹10L for comparison."
+            )
+        )
+        if bt_v2:
+            _cv1, _cv2 = st.columns(2)
+            with _cv1:
+                bt_v2_core = st.number_input(
+                    "Core (₹ lakh)", 1.0, 1000.0, 10.0, 1.0, key="bt_v2_core",
+                    help="Always-on equity sleeve (60% Midcap / 40% Nifty)"
+                )
+            with _cv2:
+                bt_v2_tactical = st.number_input(
+                    "Tactical (₹ lakh)", 1.0, 500.0, 4.0, 1.0, key="bt_v2_tactical",
+                    help="Revolving tactical buffer — liquid until deployed"
+                )
+        else:
+            bt_v2_core, bt_v2_tactical = 10.0, 4.0
 
         nifty_rows = _load_series("^NSEI")
         mid_rows = _load_series(mid_sym) if mid_sym != "^NSEI" else nifty_rows
@@ -4156,9 +4182,9 @@ with tab_backtest:
             st.warning(f"Only {len(series_dates)} aligned bars — not enough to warm a 200 EMA.")
             st.stop()
 
-        # VIX series — loaded whenever fear multipliers or VIX split are enabled
+        # VIX series — loaded whenever fear multipliers, VIX split or V2 are enabled
         vix_by_date: dict = {}
-        if bt_fear or bt_vix_split:
+        if bt_fear or bt_vix_split or bt_v2:
             vix_by_date = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
                            for r in _load_series("^INDIAVIX")}
 
@@ -4228,6 +4254,23 @@ with tab_backtest:
                 )
             except Exception as _e:
                 st.warning(f"VIX-split backtest failed: {_e}")
+
+        # ── V2 model run ──────────────────────────────────────────────────
+        res_v2 = None
+        if bt_v2:
+            try:
+                res_v2 = bte.run_v2(
+                    series_dates,
+                    [n_by_date[d] for d in series_dates],
+                    [m_by_date[d] for d in series_dates],
+                    b_by_date,
+                    vix_by_date or None,
+                    core_initial=bt_v2_core * 100_000,
+                    tactical_initial=bt_v2_tactical * 100_000,
+                    use_breadth=bt_breadth,
+                )
+            except Exception as _e:
+                st.warning(f"V2 backtest failed: {_e}")
 
         # ── Provenance ──
         first_decision = series_dates[min(199, len(series_dates) - 1)]
@@ -4313,6 +4356,15 @@ with tab_backtest:
             # Align to res.dates (run_matrix may start from same series)
             vix_eq_map = dict(zip(res_vix.dates, res_vix.total))
             eq_dict["VIX-regime split"] = [vix_eq_map.get(d) for d in res.dates]
+        if res_v2 is not None:
+            # V2 has different starting capital — normalise to ₹10L for chart comparison
+            v2_start = res_v2.total[0] if res_v2.total else 1
+            ladder_start = res.equity[0] if res.equity else 1
+            v2_map = dict(zip(res_v2.dates, res_v2.total))
+            eq_dict["V2 (normalised)"] = [
+                (v2_map.get(d, None) / v2_start * ladder_start) if v2_map.get(d) else None
+                for d in res.dates
+            ]
         eq = pd.DataFrame(eq_dict).set_index("Date")
         st.line_chart(eq, height=300)
 
@@ -4333,6 +4385,39 @@ with tab_backtest:
                 "Calm/Normal/Fear/Panic → 100% Midcap; Elevated (16-20) → 0% Midcap; "
                 "Stress (25-30) → 55% Midcap / 45% Nifty."
             )
+
+        if res_v2 is not None:
+            st.markdown('<div class="fw-h">V2 model results<span class="rule"></span></div>',
+                        unsafe_allow_html=True)
+            w1, w2, w3 = st.columns(3)
+            w1.metric("V2 CAGR", f"{res_v2.cagr()*100:.2f}%",
+                      delta=f"{(res_v2.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
+                      delta_color="normal")
+            w2.metric("V2 final", f"₹{res_v2.final/100000:.2f}L",
+                      help=f"Starting capital ₹{(bt_v2_core+bt_v2_tactical):.0f}L (₹{bt_v2_core:.0f}L core + ₹{bt_v2_tactical:.0f}L tactical)")
+            w3.metric("V2 max DD", f"{res_v2.max_drawdown()*100:.1f}%",
+                      delta=f"{(res_v2.max_drawdown()-res.max_drawdown())*100:+.1f} pp vs Ladder",
+                      delta_color="off")
+            st.caption(
+                f"V2: ₹{bt_v2_core:.0f}L equity core (60% Midcap / 40% Nifty, annual Dec rebalance) "
+                f"+ ₹{bt_v2_tactical:.0f}L revolving tactical (liquid at 6.5% when idle). "
+                "December harvest if Nifty YTD ≥ mean+2σ OR Nifty ≥ 10% above 200-EMA. "
+                "Chart curve normalised to same ₹10L start for visual comparison."
+            )
+            # V2 harvest events table
+            v2_harvests = [e for e in res_v2.events if e.kind == "harvest"]
+            v2_deploys = [e for e in res_v2.events if e.kind == "deploy"]
+            st.caption(f"V2 events: {len(v2_deploys)} deploys · {len(v2_harvests)} December harvests")
+            if res_v2.events:
+                ev2 = pd.DataFrame([{
+                    "Date": e.d,
+                    "Action": "Harvest" if e.kind == "harvest" else "Deploy",
+                    "Tier": e.tier,
+                    "EMA dist": f"{e.ema_dist:+.1f}%",
+                    "Amount": f"₹{e.amount:,.0f}",
+                    "Note": e.note,
+                } for e in res_v2.events])
+                st.dataframe(ev2, use_container_width=True, hide_index=True)
 
         # ── Deployment state over time ──
         st.markdown('<div class="fw-h">Tactical cash vs deployed<span class="rule"></span></div>',

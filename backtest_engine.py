@@ -918,3 +918,238 @@ def fixed_rebalance(
         res.reserve.append(0.0)
         res.band.append("fixed")
     return res
+
+
+# ══════════════════════════════════════════════════════════════
+#  V2 engine — ₹10L core equity + ₹4L revolving tactical
+# ══════════════════════════════════════════════════════════════
+#
+#  Core sleeve (₹10L):  60 % Midcap / 40 % Nifty, buy-and-hold with an
+#  annual rebalance on the last trading day of December.
+#
+#  Tactical sleeve (₹4L):  sits in a liquid/debt fund (CASH_YIELD) until
+#  a deploy trigger fires.  Deploy tiers (EMA distance + breadth gate) are
+#  the same as the original ladder.  The Nifty/Midcap split on each deploy
+#  tranche is VIX-regime-driven (mid_frac_for_vix).
+#
+#  Annual December harvest (either condition):
+#    (a) Nifty YTD return ≥ mean_annual_return + harvest_sigma × std
+#    (b) Nifty ≥ (1 + harvest_ema_pct/100) × 200-EMA
+#  When harvest fires → all deployed tactical positions are sold at market,
+#  proceeds move back to the liquid pool.  Core is rebalanced to 60/40
+#  regardless of whether harvest fires.
+#
+#  Total capital = core_value + tactical_liquid + tactical_deployed_value.
+# ══════════════════════════════════════════════════════════════
+
+@dataclass
+class V2Result:
+    dates: list[date] = field(default_factory=list)
+    total: list[float] = field(default_factory=list)
+    core: list[float] = field(default_factory=list)
+    tactical_liquid: list[float] = field(default_factory=list)
+    tactical_deployed: list[float] = field(default_factory=list)
+    events: list[Event] = field(default_factory=list)
+
+    @property
+    def final(self) -> float:
+        return self.total[-1] if self.total else 0.0
+
+    def cagr(self) -> float:
+        if len(self.total) < 2 or self.total[0] <= 0:
+            return 0.0
+        years = (self.dates[-1] - self.dates[0]).days / 365.25
+        return 0.0 if years <= 0 else (self.total[-1] / self.total[0]) ** (1 / years) - 1
+
+    def max_drawdown(self) -> float:
+        peak, mdd = float("-inf"), 0.0
+        for v in self.total:
+            peak = max(peak, v)
+            if peak > 0:
+                mdd = min(mdd, v / peak - 1)
+        return mdd
+
+    def calmar(self) -> float:
+        mdd = abs(self.max_drawdown())
+        return self.cagr() / mdd if mdd > 1e-9 else float("inf")
+
+
+def _annual_nifty_stats(
+    dates: list[date], nifty: list[float]
+) -> tuple[float, float]:
+    """Mean and std of calendar-year Nifty returns (computed from full series)."""
+    # collect first and last price per calendar year
+    yr_first: dict[int, float] = {}
+    yr_last: dict[int, float] = {}
+    for d, p in zip(dates, nifty):
+        yr = d.year
+        if yr not in yr_first:
+            yr_first[yr] = p
+        yr_last[yr] = p  # keeps updating → last bar wins
+
+    annual_rets: list[float] = []
+    for yr in sorted(yr_first):
+        if yr in yr_last and yr_first[yr] > 0:
+            annual_rets.append(yr_last[yr] / yr_first[yr] - 1)
+
+    if len(annual_rets) < 3:
+        return 0.12, 0.28  # fallback: ~12% mean, ~28% std (Nifty long-run)
+
+    mean = sum(annual_rets) / len(annual_rets)
+    variance = sum((r - mean) ** 2 for r in annual_rets) / (len(annual_rets) - 1)
+    return mean, variance ** 0.5
+
+
+def run_v2(
+    dates: list[date],
+    nifty: list[float],
+    midcap: list[float],
+    breadth: dict[date, float],
+    vix: dict[date, float] | None = None,
+    *,
+    core_initial: float = 1_000_000.0,        # ₹10L always in equity
+    tactical_initial: float = 400_000.0,       # ₹4L tactical buffer
+    core_mid_frac: float = 0.60,               # 60% Midcap in core equity
+    use_breadth: bool = True,
+    ema_span: int = 200,
+    harvest_ema_pct: float = 10.0,            # harvest when Nifty ≥ EMA × (1 + pct/100)
+    harvest_sigma: float = 2.0,               # harvest when YTD ≥ mean + N × std
+) -> V2Result:
+    """V2 backtest: ₹10L equity core + ₹4L revolving tactical.
+
+    Core (60% Midcap / 40% Nifty) is always deployed and rebalanced each
+    December.  Tactical starts as liquid at CASH_YIELD, deploys on EMA+breadth
+    triggers using VIX-regime split, and is harvested in December if the market
+    is extended (annual return ≥ mean+2σ OR Nifty ≥ 10% above 200-EMA).
+    """
+    n = len(dates)
+    if not (n == len(nifty) == len(midcap)):
+        raise ValueError("dates, nifty, midcap must be same length")
+
+    vix = vix or {}
+    ema200 = ema(nifty, ema_span)
+
+    # Pre-compute annual Nifty stats for harvest condition (a)
+    nifty_mean, nifty_std = _annual_nifty_stats(dates, nifty)
+    harvest_sigma_thresh = nifty_mean + harvest_sigma * nifty_std
+
+    res = V2Result()
+    daily_yield = (1 + CASH_YIELD) ** (1 / TRADING_DAYS) - 1
+
+    # ── Core sleeve: units bought at first bar price ─────────
+    core_n_units = core_initial * (1 - core_mid_frac) / nifty[0]
+    core_m_units = core_initial * core_mid_frac / midcap[0]
+
+    # ── Tactical sleeve ──────────────────────────────────────
+    tac_liquid = tactical_initial
+    # Per deploy tier: (nifty_units, midcap_units, entry_px_n, entry_px_m)
+    tac_positions: list[tuple[float, float, float, float]] = []  # [(n_units, m_units, n0, m0)]
+
+    deploy_fired: set[int] = set()   # tier numbers fired this cycle
+    daily_tranche = tactical_initial * 0.08  # 8% of tactical per tier
+    # Track year-start Nifty price for YTD-return harvest check
+    yr_start_nifty: dict[int, float] = {}
+
+    for i, d in enumerate(dates):
+        e200 = ema200[i]
+        px_n, px_m = nifty[i], midcap[i]
+        vx = vix.get(d)
+
+        # Record year-start Nifty for YTD computation
+        yr = d.year
+        if yr not in yr_start_nifty:
+            yr_start_nifty[yr] = px_n
+
+        # Liquid yield accrual
+        if i > 0:
+            tac_liquid *= (1 + daily_yield)
+
+        # ── Is this the last trading bar of the year? ─────────
+        is_year_end = (i == n - 1) or (dates[i + 1].year != yr)
+
+        if is_year_end and e200 is not None:
+            # ── December harvest check ────────────────────────
+            ema_dist_pct = (px_n / e200 - 1) * 100  # positive = above EMA
+            yr_start_px = yr_start_nifty.get(yr, px_n)
+            ytd_return = (px_n / yr_start_px - 1) if yr_start_px > 0 else 0.0
+            harvest_triggered = (
+                ytd_return >= harvest_sigma_thresh
+                or ema_dist_pct >= harvest_ema_pct
+            )
+            if harvest_triggered and tac_positions:
+                # Sell all tactical positions at today's prices
+                proceeds = sum(
+                    nu * px_n + mu * px_m
+                    for nu, mu, _, _ in tac_positions
+                )
+                tac_liquid += proceeds
+                for nu, mu, n0, m0 in tac_positions:
+                    res.events.append(Event(
+                        d=d, kind="harvest", tier="H-DEC",
+                        ema_dist=round(ema_dist_pct, 2),
+                        breadth=None,
+                        amount=round(nu * px_n + mu * px_m, 2),
+                        note=f"annual harvest: YTD={ytd_return:.1%} EMA+{ema_dist_pct:.1f}%",
+                    ))
+                tac_positions = []
+                deploy_fired = set()  # re-arm all tiers next year
+
+            # ── Core rebalance to 60:40 ───────────────────────
+            core_val = core_n_units * px_n + core_m_units * px_m
+            tgt_n_val = core_val * (1 - core_mid_frac)
+            tgt_m_val = core_val * core_mid_frac
+            core_n_units = tgt_n_val / px_n
+            core_m_units = tgt_m_val / px_m
+
+            # Re-arm deploy tiers on new year
+            if harvest_triggered:
+                deploy_fired = set()
+            # Always re-arm on year boundary (fresh year, fresh triggers)
+            deploy_fired = set()
+
+        # ── EMA re-arm check: reset tiers when Nifty crosses above EMA ──
+        if e200 is not None and px_n > e200 and deploy_fired:
+            deploy_fired = set()
+
+        # ── Deploy logic (Nifty below EMA) ──────────────────────────────
+        if e200 is not None and px_n < e200:
+            ema_dist = (px_n / e200 - 1) * 100  # negative
+            br = breadth.get(d)
+            for tier in DEPLOY_TIERS:
+                t_num = tier["tier"]
+                if t_num in deploy_fired:
+                    continue
+                gate_ema = ema_dist <= tier["threshold"]
+                gate_br = (not use_breadth) or (br is not None and br <= tier["breadth_max"])
+                if gate_ema and gate_br:
+                    avail = tac_liquid
+                    amount = min(daily_tranche, avail)
+                    if amount <= 0:
+                        deploy_fired.add(t_num)
+                        continue
+                    # VIX-split
+                    mf = mid_frac_for_vix(vx)
+                    nf = 1.0 - mf
+                    n_units_buy = (amount * nf) / px_n if px_n > 0 else 0.0
+                    m_units_buy = (amount * mf) / px_m if px_m > 0 else 0.0
+                    tac_liquid -= amount
+                    tac_positions.append((n_units_buy, m_units_buy, px_n, px_m))
+                    deploy_fired.add(t_num)
+                    res.events.append(Event(
+                        d=d, kind="deploy", tier=f"T{t_num}",
+                        ema_dist=round(ema_dist, 2),
+                        breadth=br, amount=round(amount, 2),
+                        note=f"VIX={vx:.1f} mid_frac={mf:.0%}" if vx else "VIX=N/A",
+                    ))
+
+        # ── Mark to market ──────────────────────────────────────────────
+        core_val = core_n_units * px_n + core_m_units * px_m
+        tac_dep = sum(nu * px_n + mu * px_m for nu, mu, _, _ in tac_positions)
+
+        res.dates.append(d)
+        res.core.append(core_val)
+        res.tactical_liquid.append(tac_liquid)
+        res.tactical_deployed.append(tac_dep)
+        res.total.append(core_val + tac_liquid + tac_dep)
+
+    return res
