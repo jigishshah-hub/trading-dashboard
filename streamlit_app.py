@@ -4321,16 +4321,30 @@ with tab_backtest:
         eq = pd.DataFrame(eq_dict).set_index("Date")
         st.line_chart(eq, height=300)
 
-        # ── Tabbed detail: Ladder | V2 (or flat when V2 is off) ──
+        # ── Results detail ──
         def _render_ladder_detail(container=st):
-            """Headline, comparison table, deployment chart, events."""
+            """Headline, (optional V2 comparison row), table, deployment chart, events."""
             edge = res.cagr() - static.cagr()
+            # Ladder headline
             h1, h2, h3 = container.columns(3)
             h1.metric("Ladder CAGR", f"{res.cagr()*100:.2f}%")
             h2.metric("Same allocation, no ladder", f"{static.cagr()*100:.2f}%",
                       delta=f"{edge*100:+.2f} pp from the rules", delta_color="normal")
             h3.metric("Max drawdown", f"{res.max_drawdown()*100:.1f}%",
                       delta=f"vs {static.max_drawdown()*100:.1f}% static", delta_color="off")
+            # V2 comparison row — shown immediately below so the difference is visible
+            if res_v2 is not None:
+                container.markdown("**V2 model**")
+                w1, w2, w3 = container.columns(3)
+                w1.metric("V2 CAGR", f"{res_v2.cagr()*100:.2f}%",
+                          delta=f"{(res_v2.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
+                          delta_color="normal")
+                w2.metric("V2 final", f"₹{res_v2.final/100000:.2f}L",
+                          help=f"Starting ₹{(bt_v2_core+bt_v2_tactical):.0f}L "
+                               f"(₹{bt_v2_core:.0f}L core + ₹{bt_v2_tactical:.0f}L tactical)")
+                w3.metric("V2 max DD", f"{res_v2.max_drawdown()*100:.1f}%",
+                          delta=f"{(res_v2.max_drawdown()-res.max_drawdown())*100:+.1f} pp vs Ladder",
+                          delta_color="off")
 
             container.markdown(
                 '<div class="fw-h">All four portfolios<span class="rule"></span></div>',
@@ -4413,32 +4427,22 @@ with tab_backtest:
                     "Stress (25-30) → 55% Midcap / 45% Nifty."
                 )
 
-        def _render_v2_detail(container=st):
-            """V2 metrics and events."""
-            w1, w2, w3 = container.columns(3)
-            w1.metric("V2 CAGR", f"{res_v2.cagr()*100:.2f}%",
-                      delta=f"{(res_v2.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
-                      delta_color="normal")
-            w2.metric("V2 final", f"₹{res_v2.final/100000:.2f}L",
-                      help=f"Starting ₹{(bt_v2_core+bt_v2_tactical):.0f}L "
-                           f"(₹{bt_v2_core:.0f}L core + ₹{bt_v2_tactical:.0f}L tactical)")
-            w3.metric("V2 max DD", f"{res_v2.max_drawdown()*100:.1f}%",
-                      delta=f"{(res_v2.max_drawdown()-res.max_drawdown())*100:+.1f} pp vs Ladder",
-                      delta_color="off")
-            container.caption(
-                f"₹{bt_v2_core:.0f}L equity core (60% Midcap / 40% Nifty, annual Dec rebalance) "
+        _render_ladder_detail(st)
+
+        # V2 events section (metrics already shown inline above)
+        if res_v2 is not None:
+            st.caption(
+                f"V2: ₹{bt_v2_core:.0f}L equity core (60% Midcap / 40% Nifty, annual Dec rebalance) "
                 f"+ ₹{bt_v2_tactical:.0f}L revolving tactical (liquid at 6.5% when idle). "
-                "December harvest if Nifty YTD ≥ mean+2σ OR Nifty ≥ 10% above 200-EMA. "
-                "Equity curve above is normalised to ₹10L for visual comparison."
+                "December harvest if Nifty YTD ≥ mean+2σ OR Nifty ≥ 10% above 200-EMA."
             )
-            container.markdown(
-                '<div class="fw-h">V2 events<span class="rule"></span></div>',
-                unsafe_allow_html=True)
+            st.markdown('<div class="fw-h">V2 events<span class="rule"></span></div>',
+                        unsafe_allow_html=True)
             if res_v2.events:
                 v2_deploys = [e for e in res_v2.events if e.kind == "deploy"]
                 v2_harvests = [e for e in res_v2.events if e.kind == "harvest"]
-                container.caption(f"{len(res_v2.events)} events — "
-                                  f"{len(v2_deploys)} deploys · {len(v2_harvests)} December harvests")
+                st.caption(f"{len(res_v2.events)} events — "
+                           f"{len(v2_deploys)} deploys · {len(v2_harvests)} December harvests")
                 ev2 = pd.DataFrame([{
                     "Date": e.d,
                     "Action": "Harvest" if e.kind == "harvest" else "Deploy",
@@ -4447,15 +4451,9 @@ with tab_backtest:
                     "Amount": f"₹{e.amount:,.0f}",
                     "Note": e.note,
                 } for e in res_v2.events])
-                container.dataframe(ev2, use_container_width=True, hide_index=True)
+                st.dataframe(ev2, use_container_width=True, hide_index=True)
             else:
-                container.info("No V2 events in this window.")
-
-        _render_ladder_detail(st)
-        if res_v2 is not None:
-            st.markdown('<div class="fw-h">V2 model results<span class="rule"></span></div>',
-                        unsafe_allow_html=True)
-            _render_v2_detail(st)
+                st.info("No V2 events in this window.")
 
         # ── Rolling horizon analysis ──────────────────────────────────────
         st.markdown('<div class="fw-h">Investment horizon analysis<span class="rule"></span></div>',
