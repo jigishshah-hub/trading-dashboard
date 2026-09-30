@@ -4198,9 +4198,7 @@ with tab_backtest:
                             initial=bt_initial * 100_000)
 
         # ── VIX-split comparison (run_matrix engine) ──
-        gold_rows = _load_series("GOLDBEES.NS")
-        if not gold_rows:
-            gold_rows = _load_series("^GOLD")
+        gold_rows = _load_series("GOLD_INR_SYNTH")
         g_by_date = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
                      for r in gold_rows}
         # Align gold: fill missing bars with nearest prior close so run_matrix
