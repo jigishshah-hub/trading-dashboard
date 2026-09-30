@@ -4451,14 +4451,11 @@ with tab_backtest:
             else:
                 container.info("No V2 events in this window.")
 
+        _render_ladder_detail(st)
         if res_v2 is not None:
-            _tab_ladder, _tab_v2 = st.tabs(["Ladder", "V2 model"])
-            with _tab_ladder:
-                _render_ladder_detail(_tab_ladder)
-            with _tab_v2:
-                _render_v2_detail(_tab_v2)
-        else:
-            _render_ladder_detail(st)
+            st.markdown('<div class="fw-h">V2 model results<span class="rule"></span></div>',
+                        unsafe_allow_html=True)
+            _render_v2_detail(st)
 
         # ── Rolling horizon analysis ──────────────────────────────────────
         st.markdown('<div class="fw-h">Investment horizon analysis<span class="rule"></span></div>',
