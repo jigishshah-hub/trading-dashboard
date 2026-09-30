@@ -1,0 +1,2 @@
+# Raw series data exported from Supabase — regenerate with SQL in ema_model.py docstring
+*.txt
