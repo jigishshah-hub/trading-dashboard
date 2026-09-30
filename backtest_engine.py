@@ -362,7 +362,18 @@ class Band:
     `lo`/`hi` are the EMA-distance bounds in percent: the band applies when
     lo < dist <= hi. `equity` is the target equity weight as a fraction of
     base_ref (may exceed 1.0). `gross` is equity+debt+gold as a fraction of
-    base_ref. `breadth_max`/`vix_min` are the deploy gate (None = no gate).
+    base_ref.
+
+    Deploy gate fields (None = no constraint):
+      `breadth_max` — breadth must be AT OR BELOW this value to deploy.
+      `vix_min`     — VIX must be AT OR ABOVE this value (enough fear present).
+      `vix_max`     — VIX must be BELOW this value (band is blocked when VIX is
+                      too elevated, signalling that deeper tiers are likely needed).
+                      Statistical basis: VIX 16–20 is a dead zone for Midcap
+                      relative outperformance (19-yr data, p=0.61 vs 0.05 target).
+                      At VIX ≥ 25, a shallow T1 drawdown (-5..−10 %) is likely to
+                      deepen further, so T1's tranche should be saved for T2 depth.
+                      Hence T1 carries vix_min=20, vix_max=25.
     """
     name: str
     lo: float
@@ -371,6 +382,7 @@ class Band:
     gross: float
     breadth_max: float | None = None
     vix_min: float | None = None
+    vix_max: float | None = None
 
 
 # Frothy → deepest. T6–T8 are the free parameters this session explores; the
@@ -380,7 +392,7 @@ def default_matrix(t6: float = 1.30, t7: float = 1.40, t8: float = 1.50) -> list
         Band("Frothy >+20%",  20.0,  1e9,  0.70, 1.00),
         Band("+8..+20%",       8.0,  20.0, 0.75, 1.00),
         Band("Baseline",      -5.0,   8.0, 0.80, 1.00),
-        Band("T1 -5..-10%",  -10.0,  -5.0, 0.85, 1.00, breadth_max=40, vix_min=20),
+        Band("T1 -5..-10%",  -10.0,  -5.0, 0.85, 1.00, breadth_max=40, vix_min=20, vix_max=25),
         Band("T2 -10..-15%", -15.0, -10.0, 0.92, 1.00, breadth_max=35, vix_min=25),
         Band("T3 -15..-20%", -20.0, -15.0, 1.00, 1.00, breadth_max=30),
         Band("T4 -20..-25%", -25.0, -20.0, 1.10, 1.10, breadth_max=25),
@@ -412,6 +424,9 @@ def _gate_ok(b: Band, breadth: float | None, vix: float | None, gates_on: bool) 
     if b.vix_min is not None:
         if vix is None or vix < b.vix_min:
             return False
+    if b.vix_max is not None:
+        if vix is None or vix >= b.vix_max:
+            return False
     return True
 
 
@@ -425,11 +440,15 @@ def resolve_band(dist: float, breadth: float | None, vix: float | None,
     band that confirms — never deploying past what the gates allow.
     """
     raw = _band_for_dist(dist, matrix)
-    if matrix[raw].breadth_max is None and matrix[raw].vix_min is None:
+
+    def _has_gate(b: Band) -> bool:
+        return not (b.breadth_max is None and b.vix_min is None and b.vix_max is None)
+
+    if not _has_gate(matrix[raw]):
         return raw                                  # baseline / frothy, no gate
     for i in range(raw, -1, -1):                    # walk shallower until one confirms
         b = matrix[i]
-        if b.breadth_max is None and b.vix_min is None:
+        if not _has_gate(b):
             return i                                # reached baseline
         if _gate_ok(b, breadth, vix, gates_on):
             return i
