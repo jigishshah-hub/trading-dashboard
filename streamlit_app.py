@@ -4120,6 +4120,18 @@ with tab_backtest:
                                   help="India VIX + MOVE size tranches 1.5x / 2x")
         bt_harvest = st.checkbox("Harvest ladder (book profits above the EMA)",
                                  value=True, key="bt_harvest")
+        bt_vix_split = st.checkbox(
+            "VIX-regime Nifty/Midcap split *(experimental)*",
+            value=False, key="bt_vix_split",
+            help=(
+                "When enabled, the Nifty/Midcap equity split adapts to VIX regime "
+                "(19-yr statistical analysis, 4,550+ bars). "
+                "Calm/Normal/Fear/Panic → 100% Midcap; "
+                "Elevated 16-20 → 0% Midcap (p=0.61, no edge); "
+                "Stress 25-30 → 55% Midcap / 45% Nifty. "
+                "Adds a second equity curve so you can compare."
+            )
+        )
 
         nifty_rows = _load_series("^NSEI")
         mid_rows = _load_series(mid_sym) if mid_sym != "^NSEI" else nifty_rows
@@ -4144,15 +4156,19 @@ with tab_backtest:
             st.warning(f"Only {len(series_dates)} aligned bars — not enough to warm a 200 EMA.")
             st.stop()
 
+        # VIX series — loaded whenever fear multipliers or VIX split are enabled
+        vix_by_date: dict = {}
+        if bt_fear or bt_vix_split:
+            vix_by_date = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
+                           for r in _load_series("^INDIAVIX")}
+
         fear_map = {}
         if bt_fear:
-            vix = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
-                   for r in _load_series("^INDIAVIX")}
             move = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
                     for r in _load_series("^MOVE")}
             for d in series_dates:
                 on = 0
-                if vix.get(d) is not None and vix.get(d, 0) >= 20:
+                if vix_by_date.get(d) is not None and vix_by_date.get(d, 0) >= 20:
                     on += 1
                 if move.get(d) is not None and move.get(d, 0) >= 80:
                     on += 1
@@ -4180,6 +4196,40 @@ with tab_backtest:
                             [n_by_date[d] for d in series_dates],
                             [m_by_date[d] for d in series_dates],
                             initial=bt_initial * 100_000)
+
+        # ── VIX-split comparison (run_matrix engine) ──
+        gold_rows = _load_series("GOLDBEES.NS")
+        if not gold_rows:
+            gold_rows = _load_series("^GOLD")
+        g_by_date = {datetime.fromisoformat(r["bar_date"]).date(): float(r["close"])
+                     for r in gold_rows}
+        # Align gold: fill missing bars with nearest prior close so run_matrix
+        # always gets a valid series aligned to series_dates.
+        g_series: list[float] = []
+        g_last = None
+        for d in series_dates:
+            v = g_by_date.get(d, g_last)
+            if v is None:
+                v = next((g_by_date[x] for x in sorted(g_by_date) if x <= d), None)
+            g_last = v
+            g_series.append(v or 0.0)
+
+        res_vix = None
+        if bt_vix_split and any(v > 0 for v in g_series):
+            try:
+                res_vix = bte.run_matrix(
+                    series_dates,
+                    [n_by_date[d] for d in series_dates],
+                    [m_by_date[d] for d in series_dates],
+                    g_series,
+                    b_by_date,
+                    vix_by_date or None,
+                    initial=bt_initial * 100_000,
+                    gates_on=bt_breadth,
+                    use_vix_split=True,
+                )
+            except Exception as _e:
+                st.warning(f"VIX-split backtest failed: {_e}")
 
         # ── Provenance ──
         first_decision = series_dates[min(199, len(series_dates) - 1)]
@@ -4254,14 +4304,37 @@ with tab_backtest:
         )
 
         # ── Equity curve ──
-        eq = pd.DataFrame({
+        eq_dict: dict = {
             "Date": res.dates,
             "Tactical Ladder": res.equity,
             "Same allocation, no ladder": static.equity,
             "Lump sum": lump.equity,
             "Fully invested 60/40": bh.equity,
-        }).set_index("Date")
+        }
+        if res_vix is not None:
+            # Align to res.dates (run_matrix may start from same series)
+            vix_eq_map = dict(zip(res_vix.dates, res_vix.total))
+            eq_dict["VIX-regime split"] = [vix_eq_map.get(d) for d in res.dates]
+        eq = pd.DataFrame(eq_dict).set_index("Date")
         st.line_chart(eq, height=300)
+
+        if res_vix is not None:
+            v1, v2, v3 = st.columns(3)
+            v1.metric("VIX-split CAGR", f"{res_vix.cagr()*100:.2f}%",
+                      delta=f"{(res_vix.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
+                      delta_color="normal")
+            v2.metric("VIX-split final", f"₹{res_vix.final/100000:.2f}L",
+                      delta=f"₹{(res_vix.final-res.final)/100000:+.2f}L vs Ladder",
+                      delta_color="normal")
+            v3.metric("VIX-split max DD", f"{res_vix.max_drawdown()*100:.1f}%",
+                      delta=f"{(res_vix.max_drawdown()-res.max_drawdown())*100:+.1f} pp vs Ladder",
+                      delta_color="off")
+            st.caption(
+                "VIX-split uses the **run_matrix engine** with `use_vix_split=True` — "
+                "VIX regime steers Nifty/Midcap allocation at each rebalance. "
+                "Calm/Normal/Fear/Panic → 100% Midcap; Elevated (16-20) → 0% Midcap; "
+                "Stress (25-30) → 55% Midcap / 45% Nifty."
+            )
 
         # ── Deployment state over time ──
         st.markdown('<div class="fw-h">Tactical cash vs deployed<span class="rule"></span></div>',
