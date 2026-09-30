@@ -137,11 +137,13 @@ def ema(values: list[float], span: int) -> list[float | None]:
 def fear_multiplier(signals_on: int) -> tuple[float, float]:
     """(size multiplier, early-fire allowance in EMA-distance points).
 
-    0 or 1 of 3 -> 1x; 2 of 3 -> 1.5x; 3 of 3 -> 2x and tiers fire 1% early.
+    Backtest tracks 2 signals (India VIX ≥ 20, MOVE ≥ 80).
+    Credit-stress gauge is derived live and not stored historically.
+    1-of-2 -> 1.5x; 2-of-2 -> 2x and tiers fire 1% early.
     """
-    if signals_on >= 3:
+    if signals_on >= 2:
         return 2.0, 1.0
-    if signals_on == 2:
+    if signals_on == 1:
         return 1.5, 0.0
     return 1.0, 0.0
 

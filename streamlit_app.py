@@ -4152,8 +4152,8 @@ with tab_backtest:
 
         with st.expander("Advanced options"):
             bt_fear = st.checkbox("Fear multipliers", value=False, key="bt_fear",
-                                  help="India VIX + MOVE size tranches 1.5x / 2x "
-                                       "(note: credit-stress gauge not stored historically — max 2-of-3 here)")
+                                  help="VIX≥20 → 1.5x deploy size; VIX≥20 AND MOVE≥80 → 2x + tiers fire 1% early. "
+                                       "Credit-stress gauge is live-only; backtest uses 2 signals.")
             bt_vix_split = st.checkbox(
                 "VIX-regime Nifty/Midcap split",
                 value=False, key="bt_vix_split",
