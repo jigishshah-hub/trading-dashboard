@@ -4323,18 +4323,21 @@ with tab_backtest:
 
         # ── Results detail ──
         def _render_ladder_detail(container=st):
-            """Headline, (optional V2 comparison row), table, deployment chart, events."""
+            """Headline metrics for all active strategies, comparison table, deployment chart, events."""
             edge = res.cagr() - static.cagr()
-            # Ladder headline
+
+            # ── Ladder headline ──
+            container.markdown("**Tactical Ladder**")
             h1, h2, h3 = container.columns(3)
             h1.metric("Ladder CAGR", f"{res.cagr()*100:.2f}%")
             h2.metric("Same allocation, no ladder", f"{static.cagr()*100:.2f}%",
                       delta=f"{edge*100:+.2f} pp from the rules", delta_color="normal")
             h3.metric("Max drawdown", f"{res.max_drawdown()*100:.1f}%",
                       delta=f"vs {static.max_drawdown()*100:.1f}% static", delta_color="off")
-            # V2 comparison row — shown immediately below so the difference is visible
+
+            # ── V2 headline — shown immediately below ──
             if res_v2 is not None:
-                container.markdown("**V2 model**")
+                container.markdown("**V2 model** *(always-on equity core + revolving tactical buffer)*")
                 w1, w2, w3 = container.columns(3)
                 w1.metric("V2 CAGR", f"{res_v2.cagr()*100:.2f}%",
                           delta=f"{(res_v2.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
@@ -4346,41 +4349,80 @@ with tab_backtest:
                           delta=f"{(res_v2.max_drawdown()-res.max_drawdown())*100:+.1f} pp vs Ladder",
                           delta_color="off")
 
+            # ── VIX-split headline — shown together with other strategy headlines ──
+            if res_vix is not None:
+                container.markdown("**VIX-regime Nifty/Midcap split**")
+                v1, v2c, v3 = container.columns(3)
+                v1.metric("VIX-split CAGR", f"{res_vix.cagr()*100:.2f}%",
+                          delta=f"{(res_vix.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
+                          delta_color="normal")
+                v2c.metric("VIX-split final", f"₹{res_vix.final/100000:.2f}L")
+                v3.metric("VIX-split max DD", f"{res_vix.max_drawdown()*100:.1f}%",
+                          delta=f"{(res_vix.max_drawdown()-res.max_drawdown())*100:+.1f} pp",
+                          delta_color="off")
+                container.caption(
+                    "VIX regime steers Nifty/Midcap allocation at each rebalance. "
+                    "Calm/Normal → 100% Midcap; Elevated (16–20) → 0% Midcap; "
+                    "Stress (25–30) → 55% Midcap / 45% Nifty."
+                )
+
+            # ── Comparison table (all active strategies) ──
+            n_strats = 4 + (1 if res_v2 is not None else 0) + (1 if res_vix is not None else 0)
             container.markdown(
-                '<div class="fw-h">All four portfolios<span class="rule"></span></div>',
+                f'<div class="fw-h">All {n_strats} strategies<span class="rule"></span></div>',
                 unsafe_allow_html=True)
-            comp = pd.DataFrame([
-                {"Portfolio": "Tactical Ladder",
+            comp_rows = [
+                {"Strategy": "Tactical Ladder",
                  "What it is": "35/25 core + 40% tactical deployed by the rules",
                  "CAGR": f"{res.cagr()*100:.2f}%",
                  "Final": f"₹{res.final/100000:.2f}L",
                  "Max DD": f"{res.max_drawdown()*100:.1f}%"},
-                {"Portfolio": "Same allocation, no ladder",
+                {"Strategy": "Same allocation, no ladder",
                  "What it is": "35/25 core + 40% left in cash at 6.5%",
                  "CAGR": f"{static.cagr()*100:.2f}%",
                  "Final": f"₹{static.final/100000:.2f}L",
                  "Max DD": f"{static.max_drawdown()*100:.1f}%"},
-                {"Portfolio": "Lump sum",
+                {"Strategy": "Lump sum",
                  "What it is": "Tactical deployed into midcap on day one, held",
                  "CAGR": f"{lump.cagr()*100:.2f}%",
                  "Final": f"₹{lump.final/100000:.2f}L",
                  "Max DD": f"{lump.max_drawdown()*100:.1f}%"},
-                {"Portfolio": "Fully invested 60/40",
-                 "What it is": "No cash at all — an allocation ceiling, not a rules test",
+                {"Strategy": "Fully invested 60/40",
+                 "What it is": "No cash at all — allocation ceiling, not a rules test",
                  "CAGR": f"{bh.cagr()*100:.2f}%",
                  "Final": f"₹{bh.final/100000:.2f}L",
                  "Max DD": f"{bh.max_drawdown()*100:.1f}%"},
-            ])
-            container.dataframe(comp, use_container_width=True, hide_index=True)
+            ]
+            if res_v2 is not None:
+                comp_rows.append({
+                    "Strategy": "V2 model",
+                    "What it is": f"₹{bt_v2_core:.0f}L equity core + ₹{bt_v2_tactical:.0f}L revolving tactical",
+                    "CAGR": f"{res_v2.cagr()*100:.2f}%",
+                    "Final": f"₹{res_v2.final/100000:.2f}L",
+                    "Max DD": f"{res_v2.max_drawdown()*100:.1f}%",
+                })
+            if res_vix is not None:
+                comp_rows.append({
+                    "Strategy": "VIX-regime split",
+                    "What it is": "VIX-driven Nifty/Midcap allocation at each rebalance",
+                    "CAGR": f"{res_vix.cagr()*100:.2f}%",
+                    "Final": f"₹{res_vix.final/100000:.2f}L",
+                    "Max DD": f"{res_vix.max_drawdown()*100:.1f}%",
+                })
+            container.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
             pct_below = sum(
                 1 for i, d in enumerate(res.dates)
                 if res.deployed[i] > 0) / max(1, len(res.dates)) * 100
-            container.caption(
+            ladder_note = (
                 f"Ladder held tactical exposure on {pct_below:.0f}% of bars. "
                 "Compare **Ladder vs Same allocation, no ladder** to judge the entry rules: "
-                "both hold the same 40% reserve — the only difference is whether it gets "
-                "deployed on dips."
+                "both hold the same 40% reserve — the only difference is whether it gets deployed on dips."
             )
+            if bt_fear:
+                ladder_note += " ⚡ Fear multipliers apply to Ladder only (not V2 or VIX-split)."
+            container.caption(ladder_note)
+
+            # ── Tactical cash chart ──
             container.markdown(
                 '<div class="fw-h">Tactical cash vs deployed<span class="rule"></span></div>',
                 unsafe_allow_html=True)
@@ -4389,6 +4431,7 @@ with tab_backtest:
             }).set_index("Date")
             container.area_chart(dep, height=200)
 
+            # ── Ladder events ──
             container.markdown(
                 '<div class="fw-h">Ladder events<span class="rule"></span></div>',
                 unsafe_allow_html=True)
@@ -4408,24 +4451,6 @@ with tab_backtest:
                 n_har = sum(1 for e in res.events if e.kind == "harvest")
                 container.caption(f"{len(res.events)} events — {n_dep} deploys, {n_har} harvests")
                 container.dataframe(ev, use_container_width=True, hide_index=True, height=320)
-
-            if res_vix is not None:
-                container.markdown(
-                    '<div class="fw-h">VIX-regime split<span class="rule"></span></div>',
-                    unsafe_allow_html=True)
-                v1, v2c, v3 = container.columns(3)
-                v1.metric("VIX-split CAGR", f"{res_vix.cagr()*100:.2f}%",
-                          delta=f"{(res_vix.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
-                          delta_color="normal")
-                v2c.metric("VIX-split final", f"₹{res_vix.final/100000:.2f}L")
-                v3.metric("VIX-split max DD", f"{res_vix.max_drawdown()*100:.1f}%",
-                          delta=f"{(res_vix.max_drawdown()-res.max_drawdown())*100:+.1f} pp",
-                          delta_color="off")
-                container.caption(
-                    "VIX regime steers Nifty/Midcap allocation at each rebalance. "
-                    "Calm/Normal/Fear/Panic → 100% Midcap; Elevated (16-20) → 0% Midcap; "
-                    "Stress (25-30) → 55% Midcap / 45% Nifty."
-                )
 
         _render_ladder_detail(st)
 
