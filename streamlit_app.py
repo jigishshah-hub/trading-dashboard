@@ -1107,6 +1107,162 @@ with c2:
                 unsafe_allow_html=True)
 
 # ── Tabs ────────────────────────────────────────────────────
+# ── Thesis-killer assessment engine (shared by Risk + Thesis Monitor) ──
+# Indexes research tables and classifies each killer against material news.
+# Index the research repository
+notes_by_ticker = {r["ticker"]: r for r in D["research_notes"]}
+killers_by_ticker = {}
+for k in D["thesis_killers"]:
+    killers_by_ticker.setdefault(k["ticker"], []).append(k)
+monitors_by_ticker = {}
+for m in D["monitoring_checklist"]:
+    monitors_by_ticker.setdefault(m["ticker"], []).append(m)
+
+# Generic adverse-signal lexicon: words that indicate a thesis-negative event.
+# A killer flags only when its subject AND an adverse signal both appear (or the
+# news is already classified thesis-threatening). This stops positive news that
+# merely shares a subject word (e.g. "RERA registration", "demerger approved")
+# from firing a killer whose actual condition is the opposite.
+# Tiered adverse lexicons. STRONG terms are unambiguous thesis negatives -> red
+# trigger. SOFT terms are context-dependent (below/miss/decline) -> amber review,
+# never a confident red on their own.
+STRONG_ADVERSE = frozenset({
+    "withdrawn","withdraw","withdrawal","suspend","suspended","suspension",
+    "abandon","abandoned","cancel","cancelled","cancellation","terminate",
+    "terminated","default","defaulted","fraud","fraudulent","probe","raid",
+    "raids","chargesheet","fir","arrest","arrested","freeze","frozen","freezing",
+    "resign","resigned","resignation","qualification","disqualified","downgrade",
+    "downgraded","insolvency","winding","litigation","lawsuit","delisting",
+    "impairment","scam","penalty","penalised","penalized","investigation","npa",
+})
+SOFT_ADVERSE = frozenset({
+    "delay","delayed","below","miss","missed","decline","declined","fell","fall",
+    "drop","dropped","weaker","negative","loss","losses","stress","dispute",
+    "dilution","shortfall","breach","violation","lapse","recall","halt","halted",
+    "slump","slowdown","warning","fine","cut","pressure","concern","provision",
+    "pledge","pledged","pledging",
+})
+# Generic label tokens that don't reliably identify a subject in news text.
+# Killers built only from these (revenue/margin/etc.) simply won't news-match,
+# which is honest: those are fundamentals, confirmed from filings not headlines.
+STOPTOKENS = frozenset({
+    "revenue","margin","ebitda","roce","capex","debt","order","guidance",
+    "status","report","days","concentration","result","results","update",
+    "growth","target","ratio","level","plan","plans","weak",
+})
+
+def _material_news(ticker):
+    return [n for n in D["news"]
+            if n.get("ticker") == ticker and n.get("severity_tag") != "routine update"]
+
+# Favorable-signal lexicon: subject-matched news carrying one of these (and no
+# adverse word) is thesis-SUPPORTIVE, not a caution. Stops a demerger-APPROVAL
+# from showing amber under a demerger-ABANDON killer.
+POSITIVE = frozenset({
+    "approve", "approved", "approves", "approval", "complete", "completed",
+    "completion", "grant", "granted", "receipt", "received", "registration",
+    "registered", "secured", "secures", "award", "awarded", "wins", "won",
+    "commission", "commissioned", "launch", "launched", "upgrade", "upgraded",
+    "sanction", "sanctioned", "allotted", "bagged", "cleared", "clearance",
+    "resolved", "progress", "progresses", "on-track", "ontrack", "record",
+    "strong", "beats", "robust", "surge", "surges", "jump", "jumps", "rise",
+})
+
+def _tokens(text):
+    """Word-level tokens (lowercased). Whole-word matching downstream prevents
+    substring bleed like 'ed' inside 'reduced' or 'rera' inside 'overall'."""
+    out, cur = set(), []
+    for ch in text.lower():
+        if ch.isalnum():
+            cur.append(ch)
+        else:
+            if cur:
+                out.add("".join(cur)); cur = []
+    if cur:
+        out.add("".join(cur))
+    return out
+
+def _subject_present(subj, toks):
+    """Match a subject token as a whole word, allowing light inflection
+    (pledge -> pledged/pledging: term + up to 3 trailing chars). No substring bleed."""
+    for s in subj:
+        if s in toks:
+            return True
+        for t in toks:
+            if t.startswith(s) and 0 < len(t) - len(s) <= 3:
+                return True
+    return False
+
+def _lex_hit(lexicon, toks):
+    """Whole-word lexicon match with de-stemming, so verb inflections
+    (resigns -> resign, approves -> approve, concerns -> concern) are caught."""
+    for t in toks:
+        if t in lexicon:
+            return True
+        for suf in ("s", "es", "ed", "ing", "d"):
+            if t.endswith(suf) and len(t) - len(suf) >= 3 and t[:-len(suf)] in lexicon:
+                return True
+    return False
+
+def _classify(killer, mnews):
+    """Precision-first / never-assert. A thesis killer is a DOWNSIDE watch, so it
+    only ever attaches a news card when the news is genuinely adverse. Positive or
+    neutral mentions of the same subject do NOT attach to the killer (they stay in
+    the Material News Feed) -- this stops a demerger APPROVAL from showing under a
+    demerger-ABANDON killer.
+    trigger = subject + a STRONG adverse term, or thesis-threatening severity.
+    related = subject + a SOFT adverse term (ambiguous downside -> review).
+    clear   = no adverse news on the subject (incl. positive / neutral mentions).
+    Subject tokens are >=4 chars and exclude generic metric words (STOPTOKENS)."""
+    subj = [t for t in (killer.get("label") or "").lower().split("_")
+            if len(t) >= 4 and t not in STOPTOKENS]
+    if not subj:
+        return "clear", None
+    review_hit = None
+    for n in mnews:
+        toks = _tokens(f"{n.get('headline','')} {n.get('body_snippet','')} {n.get('severity_reasoning','')}")
+        if not _subject_present(subj, toks):
+            continue
+        if n.get("severity_tag") == "thesis-threatening" or _lex_hit(STRONG_ADVERSE, toks):
+            return "trigger", n
+        if _lex_hit(SOFT_ADVERSE, toks) and review_hit is None:
+            review_hit = n
+        # positive or neutral subject overlap -> not attached to the killer (clear)
+    if review_hit:
+        return "related", review_hit
+    return "clear", None
+
+def _assess(ticker):
+    kl = killers_by_ticker.get(ticker, [])
+    mnews = _material_news(ticker)
+    trig, rel, sup, clr = [], [], [], []
+    for k in kl:
+        state, matched = _classify(k, mnews)
+        if state == "trigger":
+            trig.append((k, matched))
+        elif state == "related":
+            rel.append((k, matched))
+        elif state == "supportive":
+            sup.append((k, matched))
+        else:
+            clr.append(k)
+    return kl, trig, rel, sup, clr
+
+def _news_line(n, color="#888"):
+    d = short_date(n.get("published_at")) or ""
+    sev = n.get("severity_tag", "")
+    hl = n.get("headline", "")
+    snip = (n.get("body_snippet") or n.get("severity_reasoning") or "")[:150]
+    url = n.get("url") or ""
+    link = (f' <a href="{url}" target="_blank" style="color:#2563eb;text-decoration:none">open \u2197</a>'
+            if url.startswith("http") else "")
+    meta = " \u00b7 ".join(x for x in [d, sev] if x)
+    snip_html = f'<br><span style="color:#999">{snip}</span>' if snip else ""
+    return (f'<div style="font-size:11.5px;color:{color};margin-top:5px;line-height:1.45">'
+            f'\u21B3 <b>{hl}</b>{link}'
+            f'<br><span style="color:#999">{meta}</span>{snip_html}</div>')
+
+
 tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system, tab_framework, tab_backtest = st.tabs([
     "🎯 Cockpit", "📊 Positions", "⚡ Risk", "📈 Performance", "🔬 Thesis Monitor", "⚙️ System & Data", "🔄 Full Cycle Framework", "🧪 Backtest"
 ])
@@ -2590,8 +2746,10 @@ with tab_risk:
     r1.metric("Capital Deployed", fmt(total_invested), delta=f"{len(positions)} positions")
     r2.metric("Capital at Risk (to stop)", fmt(total_car),
               delta=f"{total_car / total_invested * 100:.1f}% of invested" if total_invested else None)
-    r3.metric("Thesis Breaks", sum(1 for p in positions if p["thesis"] == "Threatened"),
-              delta="positions with thesis-threatening news")
+    thesis_break_pos = [p for p in positions if _assess(p["ticker"])[1]]
+    r3.metric("Thesis Breaks", len(thesis_break_pos),
+              delta="positions with a triggered thesis killer",
+              delta_color="inverse" if thesis_break_pos else "normal")
 
     st.divider()
 
@@ -2599,18 +2757,23 @@ with tab_risk:
     st.markdown("#### Stop Proximity")
     st.caption("How much buffer each position has before stop-loss")
 
+    st.caption("Red ≤3% buffer · amber ≤7% · green above — matches the watchlist thresholds.")
     sorted_by_stop = sorted(positions, key=lambda p: p["stop_dist_pct"])
     for p in sorted_by_stop:
-        buf_pct = max(0, min(100, p["stop_dist_pct"]))
+        dist_pct = p["stop_dist_pct"]  # (cmp - stop) / cmp * 100
+        buf_pct = max(0, min(100, dist_pct))
         if p["cmp"] <= p["stop"] and p["stop"] > 0:
             bar_color = RED
             label = "BREACHED"
-        elif buf_pct < 50:
+        elif dist_pct <= 3:
+            bar_color = RED
+            label = f"₹{p['stop_dist_abs']:.0f} ({dist_pct:.1f}%)"
+        elif dist_pct <= 7:
             bar_color = AMBER
-            label = f"₹{p['stop_dist_abs']:.0f} ({(p['cmp'] - p['stop']) / p['cmp'] * 100:.1f}%)"
+            label = f"₹{p['stop_dist_abs']:.0f} ({dist_pct:.1f}%)"
         else:
             bar_color = GREEN
-            label = f"₹{p['stop_dist_abs']:.0f} ({(p['cmp'] - p['stop']) / p['cmp'] * 100:.1f}%)"
+            label = f"₹{p['stop_dist_abs']:.0f} ({dist_pct:.1f}%)"
 
         c1, c2, c3 = st.columns([1.5, 4, 1.5])
         c1.markdown(f"**{p['ticker']}**")
@@ -2663,26 +2826,52 @@ with tab_risk:
     st.plotly_chart(fig_heat, use_container_width=True)
 
     st.divider()
-    st.markdown("#### Risk Rules — Future Implementation")
-    rc1, rc2 = st.columns(2)
-    with rc1:
-        st.markdown("""
-        | Rule | Threshold |
-        |------|-----------|
-        | Position concentration alert | > configurable limit |
-        | Sector concentration alert | > configurable limit |
-        | Portfolio risk budget | configurable % |
-        | Stop breach | Hard alert |
-        """)
-    with rc2:
-        st.markdown("""
-        | Rule | Threshold |
-        |------|-----------|
-        | Liquidity check | ADV / position size |
-        | Correlation | 30/60/120d |
-        | Drawdown | Portfolio + sleeve |
-        | Stress test | Nifty / sector shock |
-        """)
+    st.markdown("#### Live Risk Checks")
+    st.caption("Evaluated against current positions. Adjust the limits to match your risk policy.")
+
+    lc1, lc2, lc3 = st.columns(3)
+    pos_limit = lc1.number_input("Max position weight %", min_value=5, max_value=100, value=25, step=5, key="risk_pos_lim")
+    sec_limit = lc2.number_input("Max sector weight %", min_value=10, max_value=100, value=40, step=5, key="risk_sec_lim")
+    risk_budget = lc3.number_input("Portfolio risk budget %", min_value=1, max_value=25, value=5, step=1, key="risk_budget")
+
+    # Sector weights
+    sec_weight = {}
+    for p in positions:
+        sec_weight[p["sector"]] = sec_weight.get(p["sector"], 0) + p["weight"]
+
+    pos_hot = sorted([p for p in positions if p["weight"] > pos_limit], key=lambda x: -x["weight"])
+    sec_hot = sorted([(s, w) for s, w in sec_weight.items() if w > sec_limit], key=lambda x: -x[1])
+    breached = [p for p in positions if p["cmp"] <= p["stop"] and p["stop"] > 0]
+    risk_pct = (total_car / total_invested * 100) if total_invested else 0
+
+    checks = [
+        ("Position concentration", not pos_hot, f"any name > {pos_limit}%",
+         ", ".join(f"{p['ticker']} {p['weight']:.0f}%" for p in pos_hot) if pos_hot else "all names within limit"),
+        ("Sector concentration", not sec_hot, f"any sector > {sec_limit}%",
+         ", ".join(f"{s} {w:.0f}%" for s, w in sec_hot) if sec_hot else "all sectors within limit"),
+        ("Stop breach", not breached, "hard alert on any breach",
+         ", ".join(p["ticker"] for p in breached) if breached else "no positions breached"),
+        ("Portfolio risk budget", risk_pct <= risk_budget, f"≤ {risk_budget}% of invested at risk",
+         f"{risk_pct:.1f}% of invested at risk to stops"),
+        ("Thesis killers", not thesis_break_pos, "no triggered killers on holdings",
+         ", ".join(p["ticker"] for p in thesis_break_pos) if thesis_break_pos else "no triggered killers"),
+    ]
+
+    for name, ok_flag, threshold, detail in checks:
+        if ok_flag:
+            border, bg, tag, tagcol = GREEN, "rgba(35,122,53,.05)", "✓ OK", GREEN
+        else:
+            border, bg, tag, tagcol = RED, "rgba(200,59,59,.06)", "⚠ ALERT", RED
+        st.markdown(
+            f'<div style="padding:9px 13px;margin:5px 0;background:{bg};border-left:3px solid {border};border-radius:5px;'
+            f'display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">'
+            f'<span style="font-weight:700;font-size:13px;min-width:170px">{name}</span>'
+            f'<span style="font-size:10px;font-weight:700;color:{tagcol}">{tag}</span>'
+            f'<span style="font-size:12px;color:#666">{detail}</span>'
+            f'<span style="margin-left:auto;font-size:11px;color:#999">{threshold}</span>'
+            f'</div>', unsafe_allow_html=True)
+
+    st.caption("Planned (need data not yet wired): liquidity (ADV / position size) · correlation (30/60/120d) · portfolio & sleeve drawdown · stress test (Nifty / sector shock).")
 
 # ═══════════════════════════════════════════════════════════
 # TAB 4 — PERFORMANCE
@@ -3060,158 +3249,6 @@ with tab_thesis:
     st.markdown("#### Investment Thesis Monitor")
     st.caption("Business thesis vs price. Research-backed thesis killers are cross-checked against material news \u2014 a killer only flags when its subject appears alongside an adverse signal.")
 
-    # Index the research repository
-    notes_by_ticker = {r["ticker"]: r for r in D["research_notes"]}
-    killers_by_ticker = {}
-    for k in D["thesis_killers"]:
-        killers_by_ticker.setdefault(k["ticker"], []).append(k)
-    monitors_by_ticker = {}
-    for m in D["monitoring_checklist"]:
-        monitors_by_ticker.setdefault(m["ticker"], []).append(m)
-
-    # Generic adverse-signal lexicon: words that indicate a thesis-negative event.
-    # A killer flags only when its subject AND an adverse signal both appear (or the
-    # news is already classified thesis-threatening). This stops positive news that
-    # merely shares a subject word (e.g. "RERA registration", "demerger approved")
-    # from firing a killer whose actual condition is the opposite.
-    # Tiered adverse lexicons. STRONG terms are unambiguous thesis negatives -> red
-    # trigger. SOFT terms are context-dependent (below/miss/decline) -> amber review,
-    # never a confident red on their own.
-    STRONG_ADVERSE = frozenset({
-        "withdrawn","withdraw","withdrawal","suspend","suspended","suspension",
-        "abandon","abandoned","cancel","cancelled","cancellation","terminate",
-        "terminated","default","defaulted","fraud","fraudulent","probe","raid",
-        "raids","chargesheet","fir","arrest","arrested","freeze","frozen","freezing",
-        "resign","resigned","resignation","qualification","disqualified","downgrade",
-        "downgraded","insolvency","winding","litigation","lawsuit","delisting",
-        "impairment","scam","penalty","penalised","penalized","investigation","npa",
-    })
-    SOFT_ADVERSE = frozenset({
-        "delay","delayed","below","miss","missed","decline","declined","fell","fall",
-        "drop","dropped","weaker","negative","loss","losses","stress","dispute",
-        "dilution","shortfall","breach","violation","lapse","recall","halt","halted",
-        "slump","slowdown","warning","fine","cut","pressure","concern","provision",
-        "pledge","pledged","pledging",
-    })
-    # Generic label tokens that don't reliably identify a subject in news text.
-    # Killers built only from these (revenue/margin/etc.) simply won't news-match,
-    # which is honest: those are fundamentals, confirmed from filings not headlines.
-    STOPTOKENS = frozenset({
-        "revenue","margin","ebitda","roce","capex","debt","order","guidance",
-        "status","report","days","concentration","result","results","update",
-        "growth","target","ratio","level","plan","plans","weak",
-    })
-
-    def _material_news(ticker):
-        return [n for n in D["news"]
-                if n.get("ticker") == ticker and n.get("severity_tag") != "routine update"]
-
-    # Favorable-signal lexicon: subject-matched news carrying one of these (and no
-    # adverse word) is thesis-SUPPORTIVE, not a caution. Stops a demerger-APPROVAL
-    # from showing amber under a demerger-ABANDON killer.
-    POSITIVE = frozenset({
-        "approve", "approved", "approves", "approval", "complete", "completed",
-        "completion", "grant", "granted", "receipt", "received", "registration",
-        "registered", "secured", "secures", "award", "awarded", "wins", "won",
-        "commission", "commissioned", "launch", "launched", "upgrade", "upgraded",
-        "sanction", "sanctioned", "allotted", "bagged", "cleared", "clearance",
-        "resolved", "progress", "progresses", "on-track", "ontrack", "record",
-        "strong", "beats", "robust", "surge", "surges", "jump", "jumps", "rise",
-    })
-
-    def _tokens(text):
-        """Word-level tokens (lowercased). Whole-word matching downstream prevents
-        substring bleed like 'ed' inside 'reduced' or 'rera' inside 'overall'."""
-        out, cur = set(), []
-        for ch in text.lower():
-            if ch.isalnum():
-                cur.append(ch)
-            else:
-                if cur:
-                    out.add("".join(cur)); cur = []
-        if cur:
-            out.add("".join(cur))
-        return out
-
-    def _subject_present(subj, toks):
-        """Match a subject token as a whole word, allowing light inflection
-        (pledge -> pledged/pledging: term + up to 3 trailing chars). No substring bleed."""
-        for s in subj:
-            if s in toks:
-                return True
-            for t in toks:
-                if t.startswith(s) and 0 < len(t) - len(s) <= 3:
-                    return True
-        return False
-
-    def _lex_hit(lexicon, toks):
-        """Whole-word lexicon match with de-stemming, so verb inflections
-        (resigns -> resign, approves -> approve, concerns -> concern) are caught."""
-        for t in toks:
-            if t in lexicon:
-                return True
-            for suf in ("s", "es", "ed", "ing", "d"):
-                if t.endswith(suf) and len(t) - len(suf) >= 3 and t[:-len(suf)] in lexicon:
-                    return True
-        return False
-
-    def _classify(killer, mnews):
-        """Precision-first / never-assert. A thesis killer is a DOWNSIDE watch, so it
-        only ever attaches a news card when the news is genuinely adverse. Positive or
-        neutral mentions of the same subject do NOT attach to the killer (they stay in
-        the Material News Feed) -- this stops a demerger APPROVAL from showing under a
-        demerger-ABANDON killer.
-        trigger = subject + a STRONG adverse term, or thesis-threatening severity.
-        related = subject + a SOFT adverse term (ambiguous downside -> review).
-        clear   = no adverse news on the subject (incl. positive / neutral mentions).
-        Subject tokens are >=4 chars and exclude generic metric words (STOPTOKENS)."""
-        subj = [t for t in (killer.get("label") or "").lower().split("_")
-                if len(t) >= 4 and t not in STOPTOKENS]
-        if not subj:
-            return "clear", None
-        review_hit = None
-        for n in mnews:
-            toks = _tokens(f"{n.get('headline','')} {n.get('body_snippet','')} {n.get('severity_reasoning','')}")
-            if not _subject_present(subj, toks):
-                continue
-            if n.get("severity_tag") == "thesis-threatening" or _lex_hit(STRONG_ADVERSE, toks):
-                return "trigger", n
-            if _lex_hit(SOFT_ADVERSE, toks) and review_hit is None:
-                review_hit = n
-            # positive or neutral subject overlap -> not attached to the killer (clear)
-        if review_hit:
-            return "related", review_hit
-        return "clear", None
-
-    def _assess(ticker):
-        kl = killers_by_ticker.get(ticker, [])
-        mnews = _material_news(ticker)
-        trig, rel, sup, clr = [], [], [], []
-        for k in kl:
-            state, matched = _classify(k, mnews)
-            if state == "trigger":
-                trig.append((k, matched))
-            elif state == "related":
-                rel.append((k, matched))
-            elif state == "supportive":
-                sup.append((k, matched))
-            else:
-                clr.append(k)
-        return kl, trig, rel, sup, clr
-
-    def _news_line(n, color="#888"):
-        d = short_date(n.get("published_at")) or ""
-        sev = n.get("severity_tag", "")
-        hl = n.get("headline", "")
-        snip = (n.get("body_snippet") or n.get("severity_reasoning") or "")[:150]
-        url = n.get("url") or ""
-        link = (f' <a href="{url}" target="_blank" style="color:#2563eb;text-decoration:none">open \u2197</a>'
-                if url.startswith("http") else "")
-        meta = " \u00b7 ".join(x for x in [d, sev] if x)
-        snip_html = f'<br><span style="color:#999">{snip}</span>' if snip else ""
-        return (f'<div style="font-size:11.5px;color:{color};margin-top:5px;line-height:1.45">'
-                f'\u21B3 <b>{hl}</b>{link}'
-                f'<br><span style="color:#999">{meta}</span>{snip_html}</div>')
 
     # -- Thesis health + attention (holdings-focused; full catalog in Research Library) --
     all_researched = list(notes_by_ticker.keys())
