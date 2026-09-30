@@ -974,6 +974,165 @@ class V2Result:
         return self.cagr() / mdd if mdd > 1e-9 else float("inf")
 
 
+# ══════════════════════════════════════════════════════════════
+#  Rolling horizon analysis
+# ══════════════════════════════════════════════════════════════
+
+def rolling_horizon_stats(
+    dates: list[date],
+    equity: list[float],
+    horizon_years: float,
+    risk_free: float = CASH_YIELD,
+) -> dict:
+    """Compute rolling window stats for a single equity curve.
+
+    Returns a dict with keys:
+      n_windows, worst_cagr, p25_cagr, median_cagr, p75_cagr, best_cagr,
+      pct_positive, avg_max_dd, worst_max_dd, avg_sharpe, avg_calmar.
+    All floats (ratios, not percentages).  Returns None if fewer than
+    horizon_years of data exist.
+    """
+    import math
+
+    horizon_days = int(horizon_years * 365.25)
+    n = len(dates)
+    if n < 2:
+        return {}
+
+    total_span = (dates[-1] - dates[0]).days
+    if total_span < horizon_days:
+        return {}
+
+    # Pre-compute daily log returns for Sharpe
+    daily_log_ret = [0.0]
+    for i in range(1, n):
+        if equity[i - 1] > 0 and equity[i] > 0:
+            daily_log_ret.append(math.log(equity[i] / equity[i - 1]))
+        else:
+            daily_log_ret.append(0.0)
+
+    # Build index of dates → index for fast bisect
+    from bisect import bisect_left
+    date_list = list(dates)
+
+    cagrs: list[float] = []
+    max_dds: list[float] = []
+    sharpes: list[float] = []
+
+    i = 0
+    while i < n:
+        start_d = date_list[i]
+        end_d_target = date(
+            start_d.year + int(horizon_years),
+            start_d.month,
+            start_d.day,
+        ) if False else None  # placeholder — use days offset below
+
+        # Find end index: first bar ≥ start + horizon_days
+        target_days = (dates[i].toordinal() + horizon_days)
+        j = bisect_left([d.toordinal() for d in date_list], target_days, i + 1)
+        if j >= n:
+            break
+
+        # Window [i..j]
+        e_start = equity[i]
+        e_end = equity[j]
+        if e_start <= 0:
+            i += 1
+            continue
+
+        # CAGR
+        actual_years = (date_list[j] - date_list[i]).days / 365.25
+        cagr = (e_end / e_start) ** (1 / actual_years) - 1 if actual_years > 0 else 0.0
+
+        # Max drawdown within window
+        peak = equity[i]
+        mdd = 0.0
+        for k in range(i, j + 1):
+            peak = max(peak, equity[k])
+            if peak > 0:
+                mdd = min(mdd, equity[k] / peak - 1)
+
+        # Sharpe (annualised, excess over risk_free)
+        window_ret = daily_log_ret[i:j + 1]
+        if len(window_ret) > 1:
+            mean_d = sum(window_ret) / len(window_ret)
+            var_d = sum((r - mean_d) ** 2 for r in window_ret) / (len(window_ret) - 1)
+            std_d = var_d ** 0.5
+            rf_daily = (1 + risk_free) ** (1 / TRADING_DAYS) - 1
+            sharpe = ((mean_d - rf_daily) * TRADING_DAYS) / (std_d * (TRADING_DAYS ** 0.5)) if std_d > 1e-10 else 0.0
+        else:
+            sharpe = 0.0
+
+        cagrs.append(cagr)
+        max_dds.append(mdd)
+        sharpes.append(sharpe)
+
+        i += 1  # slide one bar at a time (monthly stride would be faster; daily is exact)
+
+    if not cagrs:
+        return {}
+
+    cagrs_s = sorted(cagrs)
+    n_w = len(cagrs_s)
+
+    def pct(lst, p):
+        idx = max(0, min(len(lst) - 1, int(p / 100 * len(lst))))
+        return lst[idx]
+
+    avg_mdd = sum(max_dds) / len(max_dds)
+    avg_sharpe = sum(sharpes) / len(sharpes)
+    calmar = cagrs_s[len(cagrs_s) // 2] / abs(avg_mdd) if avg_mdd < 0 else float("inf")
+
+    return {
+        "n_windows": n_w,
+        "worst_cagr": cagrs_s[0],
+        "p25_cagr": pct(cagrs_s, 25),
+        "median_cagr": pct(cagrs_s, 50),
+        "p75_cagr": pct(cagrs_s, 75),
+        "best_cagr": cagrs_s[-1],
+        "pct_positive": sum(1 for c in cagrs if c > 0) / n_w,
+        "avg_max_dd": avg_mdd,
+        "worst_max_dd": min(max_dds),
+        "avg_sharpe": avg_sharpe,
+        "avg_calmar": calmar,
+    }
+
+
+def horizon_table(
+    strategies: dict[str, tuple[list[date], list[float]]],
+    horizons: list[float] = (5.0, 6.0, 10.0),
+    risk_free: float = CASH_YIELD,
+) -> list[dict]:
+    """Build a flat list of rows (strategy, horizon, metrics) for display.
+
+    `strategies` maps label → (dates, equity_curve).
+    Returns list of dicts suitable for pd.DataFrame.
+    """
+    rows = []
+    for label, (dates, equity) in strategies.items():
+        for h in horizons:
+            stats = rolling_horizon_stats(dates, equity, h, risk_free)
+            if not stats:
+                continue
+            rows.append({
+                "Strategy": label,
+                "Horizon": f"{h:.0f}yr",
+                "Windows": stats["n_windows"],
+                "Worst CAGR": stats["worst_cagr"],
+                "P25 CAGR": stats["p25_cagr"],
+                "Median CAGR": stats["median_cagr"],
+                "P75 CAGR": stats["p75_cagr"],
+                "Best CAGR": stats["best_cagr"],
+                "% Positive": stats["pct_positive"],
+                "Avg Max DD": stats["avg_max_dd"],
+                "Worst Max DD": stats["worst_max_dd"],
+                "Avg Sharpe": stats["avg_sharpe"],
+                "Avg Calmar": stats["avg_calmar"],
+            })
+    return rows
+
+
 def _annual_nifty_stats(
     dates: list[date], nifty: list[float]
 ) -> tuple[float, float]:

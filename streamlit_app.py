@@ -4450,6 +4450,58 @@ with tab_backtest:
             st.caption(f"{len(res.events)} events — {n_dep} deploys, {n_har} harvests")
             st.dataframe(ev, use_container_width=True, hide_index=True, height=320)
 
+        # ── Rolling horizon analysis ──────────────────────────────────────
+        st.markdown('<div class="fw-h">Investment horizon analysis<span class="rule"></span></div>',
+                    unsafe_allow_html=True)
+        _hz_opts = st.multiselect(
+            "Horizons (years)", [3, 5, 6, 8, 10, 15], default=[5, 6, 10],
+            key="bt_horizons",
+            help="For each horizon, shows rolling window stats across all start dates in the series."
+        )
+        if _hz_opts:
+            _strats: dict = {
+                "Tactical Ladder": (res.dates, res.equity),
+                "Same alloc, no ladder": (static.dates, static.equity),
+                "Lump sum": (lump.dates, lump.equity),
+                "Fully invested 60/40": (bh.dates, bh.equity),
+            }
+            if res_vix is not None:
+                _strats["VIX-regime split"] = (res_vix.dates, res_vix.total)
+            if res_v2 is not None:
+                _strats["V2 model"] = (res_v2.dates, res_v2.total)
+
+            _rows = bte.horizon_table(_strats, horizons=[float(h) for h in _hz_opts])
+            if _rows:
+                _hdf = pd.DataFrame(_rows)
+                # Format as percentages / readable numbers
+                _pct_cols = ["Worst CAGR", "P25 CAGR", "Median CAGR", "P75 CAGR",
+                             "Best CAGR", "Avg Max DD", "Worst Max DD"]
+                _ratio_cols = ["% Positive"]
+                _float2_cols = ["Avg Sharpe", "Avg Calmar"]
+                _fmt: dict = {}
+                for c in _pct_cols:
+                    _fmt[c] = "{:.1f}%"
+                for c in _ratio_cols:
+                    _fmt[c] = "{:.0f}%"
+                for c in _float2_cols:
+                    _fmt[c] = "{:.2f}"
+                _hdf_disp = _hdf.copy()
+                for c in _pct_cols:
+                    _hdf_disp[c] = _hdf[c].map(lambda x: f"{x*100:.1f}%")
+                for c in _ratio_cols:
+                    _hdf_disp[c] = _hdf[c].map(lambda x: f"{x*100:.0f}%")
+                for c in _float2_cols:
+                    _hdf_disp[c] = _hdf[c].map(lambda x: f"{x:.2f}")
+                st.dataframe(_hdf_disp, use_container_width=True, hide_index=True)
+                st.caption(
+                    "Each row = rolling windows of that length slid 1 bar at a time. "
+                    "Worst/Median/Best CAGR show the distribution of outcomes across all entry dates. "
+                    "Avg Sharpe = excess over 6.5% risk-free, annualised. "
+                    "Avg Calmar = median CAGR / avg max DD within window."
+                )
+            else:
+                st.info("Not enough data for selected horizons — shorten the horizon or extend the start date.")
+
         with st.expander("What this does and does not model"):
             st.markdown(f"""
             **Models:** dual-condition tier arming (EMA distance *and* breadth),
