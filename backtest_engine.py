@@ -348,20 +348,22 @@ LTCG_DAYS = 365
 EQUITY_NIFTY_FRAC = 0.58    # equity is 58/42 Nifty/Midcap (the 35/25 core proportion)
 
 # VIX-regime Midcap fraction schedule (fraction of equity sleeve that is Midcap).
-# Derived from 19-yr statistical analysis of optimal Nifty/Midcap split by VIX regime:
-#   VIX <16   (Calm/Normal)  → 100% Midcap in tactical tranche  → keep base 0.42
-#   VIX 16-20 (Elevated)     → Midcap/Nifty split NOT significant (p=0.61) → shift to Nifty
-#   VIX 20-25 (Fear)         → 100% Midcap (significant outperformance returns)
-#   VIX 25-30 (Stress)       → 55% Midcap / 45% Nifty  → slight Nifty tilt
-#   VIX ≥30   (Panic)        → 100% Midcap (fastest recovery)
+# Derived from 19-yr statistical analysis of optimal Nifty/Midcap split by VIX regime
+# (4,550+ daily bars, 20-day forward annualised returns):
+#   VIX  <13  (Calm)     → Midcap 15.0% vs Nifty 9.2%,  Sharpe 1.07 vs 0.84 → 100% Midcap
+#   VIX 13-16 (Normal)   → Midcap  4.4% vs Nifty 1.7%,  Sharpe 0.21 vs 0.10 → 100% Midcap
+#   VIX 16-20 (Elevated) → Midcap  2.3% vs Nifty 2.7%,  p=0.61 (NOT significant) → 0% Midcap
+#   VIX 20-25 (Fear)     → Midcap 13.8% vs Nifty 10.0%, Sharpe 0.72 vs 0.57 → 100% Midcap
+#   VIX 25-30 (Stress)   → Midcap 33.4% vs Nifty 29.0%, Sharpe 1.57 vs 1.53 → 55/45 split
+#   VIX  ≥30  (Panic)    → Midcap 42.5% vs Nifty 31.0%, Sharpe 0.87 vs 0.78 → 100% Midcap
 # Used only when matrix_backtest(..., use_vix_split=True).
 VIX_MID_FRAC_SCHEDULE: list[tuple[float, float, float]] = [
     # (vix_lo_inclusive, vix_hi_exclusive, mid_frac)
-    (0.0,  16.0, 1 - EQUITY_NIFTY_FRAC),   # Calm/Normal: base 42% Midcap
-    (16.0, 20.0, 0.00),                      # Elevated dead zone: 0% Midcap → full Nifty
-    (20.0, 25.0, 1 - EQUITY_NIFTY_FRAC),   # Fear: Midcap outperforms, restore base
-    (25.0, 30.0, 0.55),                                      # Stress: 55% Midcap / 45% Nifty
-    (30.0, 1e9,  1 - EQUITY_NIFTY_FRAC),   # Panic: full Midcap recovery
+    (0.0,  16.0, 1.00),   # Calm + Normal: 100% Midcap
+    (16.0, 20.0, 0.00),   # Elevated dead zone: 0% Midcap → full Nifty (p=0.61)
+    (20.0, 25.0, 1.00),   # Fear: 100% Midcap
+    (25.0, 30.0, 0.55),   # Stress: 55% Midcap / 45% Nifty (diversify at peak stress)
+    (30.0, 1e9,  1.00),   # Panic: 100% Midcap (fastest recovery: +42.5% vs +31%)
 ]
 
 
@@ -671,10 +673,10 @@ def run_matrix(
 
     `use_vix_split` — when True, the Nifty/Midcap split within the equity
     sleeve shifts at each rebalance according to VIX_MID_FRAC_SCHEDULE rather
-    than staying at the fixed EQUITY_NIFTY_FRAC. Statistically backed by 19 yr
-    of daily data: VIX 16–20 is a dead zone for Midcap outperformance (p=0.61);
-    VIX 25–30 calls for a 45/55 Nifty/Midcap tilt; all other regimes restore
-    the base Midcap weight.
+    than the fixed EQUITY_NIFTY_FRAC. Statistically backed by 19 yr of daily
+    data: Calm/Normal/Fear/Panic → 100% Midcap; Elevated (VIX 16-20) → 0%
+    Midcap (p=0.61, not significant); Stress (VIX 25-30) → 55% Midcap / 45%
+    Nifty.
 
     `nifty`, `midcap`, `gold` are aligned closes; `breadth`/`vix` are per-date
     lookups for the deploy gate. `reserve_over_base` (rob) is the standby set
