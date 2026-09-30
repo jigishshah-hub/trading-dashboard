@@ -3366,18 +3366,17 @@ with tab_thesis:
                     _card(k.get("label", ""), k.get("description", ""), "#f59e0b",
                           "rgba(245,158,11,.05)", "\U0001F50E review — unconfirmed",
                           _news_line(matched, "#8a6d1a") if matched else "")
-                for k, matched in sup:
-                    _card(k.get("label", ""), k.get("description", ""), "#3f9142",
-                          "rgba(63,145,66,.05)", "\U0001F7E2 supportive news",
-                          _news_line(matched, "#2f6f4f") if matched else "")
-                if clr:
+                # Supportive killers (positive news, no adverse signal) are thesis-positive \u2192
+                # fold into the Clear chips; no card shown so they don't look like a concern.
+                clr_all = clr + [k for k, _ in sup]
+                if clr_all:
                     chips = " \u00b7 ".join(
                         f'<span style="font-family:monospace;font-size:11px;color:#3f9142">{k.get("label","")}</span>'
-                        for k in clr)
+                        for k in clr_all)
                     st.markdown(
                         f'<div style="padding:8px 12px;margin:5px 0;background:rgba(63,145,66,.04);'
                         f'border-left:3px solid #3f9142;border-radius:5px;font-size:12px">'
-                        f'<span style="color:#3f9142;font-weight:700">\U0001F7E2 Clear</span> \u00b7 {chips}</div>',
+                        f'<span style="color:#3f9142;font-weight:700">\U0001F7E2 Clear / no adverse signal</span> \u00b7 {chips}</div>',
                         unsafe_allow_html=True)
             monitors = monitors_by_ticker.get(sel, [])
             if monitors:
