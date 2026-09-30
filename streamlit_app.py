@@ -720,7 +720,7 @@ else:
 
 # Tactical Ladder tiers (dual-condition: EMA distance + breadth)
 LADDER_TIERS = [
-    {"tier": 1, "threshold": -5.0,  "breadth_max": 40, "deploy_pct": 8, "label": "Tier 1 — Light correction"},
+    {"tier": 1, "threshold":  -8.0, "breadth_max": 40, "deploy_pct": 8, "label": "Tier 1 — Light correction"},
     {"tier": 2, "threshold": -10.0, "breadth_max": 35, "deploy_pct": 8, "label": "Tier 2 — Moderate correction"},
     {"tier": 3, "threshold": -15.0, "breadth_max": 30, "deploy_pct": 8, "label": "Tier 3 — Deep correction"},
     {"tier": 4, "threshold": -20.0, "breadth_max": 25, "deploy_pct": 8, "label": "Tier 4 — Severe correction"},
@@ -1327,7 +1327,7 @@ with tab_cockpit:
         elif tier_met(-10, 35):
             sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T2", "🟡", "#a76a00", "#fff6dd"
             deploy_perm = "DEPLOY TIER 2 — 16% tactical deployed"
-        elif tier_met(-5, 40):
+        elif tier_met(-8, 40):
             sys_state, sys_icon, sys_color, sys_bg = "DEPLOY T1", "🟡", "#a76a00", "#fff6dd"
             deploy_perm = "DEPLOY TIER 1 — 8% tactical deployed"
         elif pct >= 20 and bpct is not None and bpct >= 80:
@@ -1357,8 +1357,8 @@ with tab_cockpit:
 
         with regime_left:
             # Nifty price strip
-            t1_trigger = nifty["ema200"] * 0.95
-            dist_to_t1 = abs(pct - (-5.0))
+            t1_trigger = nifty["ema200"] * 0.92
+            dist_to_t1 = abs(pct - (-8.0))
             ema_dist_bg = "#feecec" if pct < -10 else "#fff6dd" if pct < 0 else "#dcfce7" if pct < 10 else "#ccfbf1"
             ema_dist_color = "#991b1b" if pct < -10 else "#92400e" if pct < 0 else "#166534" if pct < 10 else "#115e59"
             st.markdown(
@@ -1372,7 +1372,7 @@ with tab_cockpit:
                 f'</div>'
                 f'<div style="display:flex;gap:16px;font-size:11px;color:#6b7280;margin-top:6px;flex-wrap:wrap">'
                 f'<span>200 EMA: {nifty["ema200"]:,.0f}</span>'
-                f'<span>T1 trigger: {t1_trigger:,.0f} (−5.0%)</span>'
+                f'<span>T1 trigger: {t1_trigger:,.0f} (−8.0%)</span>'
                 f'<span style="color:#d97706">{dist_to_t1:.2f}% from T1</span>'
                 f'</div>'
                 f'</div>', unsafe_allow_html=True)
@@ -1615,8 +1615,8 @@ with tab_cockpit:
 
             HARVEST_TIERS = [
                 {"id": "H4", "pct": 20, "action": "Book 75%", "note": "euphoria zone"},
-                {"id": "H3", "pct": 15, "action": "Book 50%", "note": "90th pctile"},
-                {"id": "H2", "pct": 10, "action": "Book 25%", "note": "75th pctile"},
+                {"id": "H3", "pct": 17, "action": "Book 50%", "note": "90th pctile"},
+                {"id": "H2", "pct": 12, "action": "Book 25%", "note": "75th pctile"},
                 {"id": "H1", "pct": 5,  "action": "Trail 7%", "note": "set stops"},
             ]
 
@@ -3818,7 +3818,7 @@ with tab_framework:
             return f'<span class="cyc-t on" style="background:{color}">{name}</span>'
         return f'<span class="cyc-t">{name}</span>'
 
-    h_levels = [("H1", 5), ("H2", 10), ("H3", 15), ("H4", 20)]
+    h_levels = [("H1", 5), ("H2", 12), ("H3", 17), ("H4", 20)]
     h_chips = "".join(
         _chip(nm, fw_pct is not None and fw_pct >= lv, "#16a34a") for nm, lv in h_levels)
     t_chips = "".join(
@@ -3917,9 +3917,9 @@ with tab_framework:
     for tier, lvl, action, book, basis in [
         ("H1", 5, "Activate trailing stops", "—",
          "Median rally off 200 EMA ≈ 8–12%. Trail protects gains if momentum fades."),
-        ("H2", 10, "Book 25% of tactical", "25%",
-         "75th-pctl rally from EMA. Historically only ~40% of rallies sustain past +10%."),
-        ("H3", 15, "Book 50% of tactical", "50%",
+        ("H2", 12, "Book 25% of tactical", "25%",
+         "75th-pctl rally from EMA. Historically only ~40% of rallies sustain past +12%."),
+        ("H3", 17, "Book 50% of tactical", "50%",
          "90th-pctl extension. Mean-reversion risk rises sharply."),
         ("H4", 20, "Book 75% of tactical", "75%",
          "97th-pctl — extreme overextension. Rare; preserve capital."),
