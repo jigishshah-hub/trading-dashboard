@@ -3341,60 +3341,64 @@ with tab_thesis:
             else:
                 st.caption("No notes match the filter.")
 
-            st.markdown("**Open a note**")
-            sel = st.selectbox("Stock", lib_tickers, key="lib_stock", label_visibility="collapsed")
-            note = notes_by_ticker.get(sel)
-            kl, trig, rel, sup, clr = assess_cache.get(sel) or _assess(sel)
-            if note:
-                vc1, vc2, vc3, vc4 = st.columns(4)
-                vc1.metric("Verdict", note.get("analyst_verdict") or "\u2014")
-                vc2.metric("Status", note.get("status") or "\u2014")
-                iv_lo, iv_hi = f(note.get("intrinsic_value_low")), f(note.get("intrinsic_value_high"))
-                vc3.metric("Intrinsic Value", f"{fmt(iv_lo)}\u2013{fmt(iv_hi)}" if iv_lo and iv_hi else "\u2014")
-                vc4.metric("CMP at analysis", fmt(f(note.get("cmp_at_analysis"))))
-                if note.get("primary_risk"):
-                    st.caption(f"**Primary risk:** {note['primary_risk']}")
-            if not kl:
-                st.caption("No active thesis killers for this stock.")
+            open_choices = [r["Ticker"] for r in lib_rows]
+            if not open_choices:
+                st.caption("No notes to open under the current filter \u2014 clear the search or untick \u201cOnly flagged\u201d.")
             else:
-                st.markdown("##### Thesis Killers")
-                for k, matched in trig:
-                    _card(k.get("label", ""), k.get("description", ""), "#ef4444",
-                          "rgba(239,68,68,.06)", "\u26A0\uFE0F POSSIBLE TRIGGER \u2014 CONFIRM",
-                          _news_line(matched, "#b23b3b") if matched else "")
-                for k, matched in rel:
-                    _card(k.get("label", ""), k.get("description", ""), "#f59e0b",
-                          "rgba(245,158,11,.05)", "\U0001F50E review — unconfirmed",
-                          _news_line(matched, "#8a6d1a") if matched else "")
-                # Supportive killers (positive news, no adverse signal) are thesis-positive \u2192
-                # fold into the Clear chips; no card shown so they don't look like a concern.
-                clr_all = clr + [k for k, _ in sup]
-                if clr_all:
-                    chips = " \u00b7 ".join(
-                        f'<span style="font-family:monospace;font-size:11px;color:#3f9142">{k.get("label","")}</span>'
-                        for k in clr_all)
-                    st.markdown(
-                        f'<div style="padding:8px 12px;margin:5px 0;background:rgba(63,145,66,.04);'
-                        f'border-left:3px solid #3f9142;border-radius:5px;font-size:12px">'
-                        f'<span style="color:#3f9142;font-weight:700">\U0001F7E2 Clear / no adverse signal</span> \u00b7 {chips}</div>',
-                        unsafe_allow_html=True)
-            monitors = monitors_by_ticker.get(sel, [])
-            if monitors:
-                st.markdown("##### Monitoring Checklist")
-                freq_col = {"QUARTERLY": "#2f6f4f", "EVENT": "#5b4bb0", "MONTHLY": "#b4690e", "ANNUAL": "#2563eb"}
-                order = {"QUARTERLY": 0, "EVENT": 1, "MONTHLY": 2, "ANNUAL": 3}
-                for m in sorted(monitors, key=lambda x: order.get(x.get("frequency"), 9)):
-                    fq = m.get("frequency", "")
-                    col = freq_col.get(fq, "#666")
-                    st.markdown(
-                        f'<div style="padding:5px 0;font-size:13px;border-bottom:1px solid rgba(0,0,0,.05)">'
-                        f'<span style="display:inline-block;min-width:88px;font-size:9.5px;font-weight:700;'
-                        f'letter-spacing:.04em;color:#fff;background:{col};padding:2px 7px;border-radius:10px;'
-                        f'text-align:center">{fq}</span> '
-                        f'<span style="font-family:monospace;font-size:11px;color:#888">{m.get("label","")}</span> '
-                        f'\u2014 {m.get("description","")}</div>',
-                        unsafe_allow_html=True)
-
+                st.markdown("**Open a note**")
+                sel = st.selectbox("Stock", open_choices, key="lib_stock", label_visibility="collapsed")
+                note = notes_by_ticker.get(sel)
+                kl, trig, rel, sup, clr = assess_cache.get(sel) or _assess(sel)
+                if note:
+                    vc1, vc2, vc3, vc4 = st.columns(4)
+                    vc1.metric("Verdict", note.get("analyst_verdict") or "\u2014")
+                    vc2.metric("Status", note.get("status") or "\u2014")
+                    iv_lo, iv_hi = f(note.get("intrinsic_value_low")), f(note.get("intrinsic_value_high"))
+                    vc3.metric("Intrinsic Value", f"{fmt(iv_lo)}\u2013{fmt(iv_hi)}" if iv_lo and iv_hi else "\u2014")
+                    vc4.metric("CMP at analysis", fmt(f(note.get("cmp_at_analysis"))))
+                    if note.get("primary_risk"):
+                        st.caption(f"**Primary risk:** {note['primary_risk']}")
+                if not kl:
+                    st.caption("No active thesis killers for this stock.")
+                else:
+                    st.markdown("##### Thesis Killers")
+                    for k, matched in trig:
+                        _card(k.get("label", ""), k.get("description", ""), "#ef4444",
+                              "rgba(239,68,68,.06)", "\u26A0\uFE0F POSSIBLE TRIGGER \u2014 CONFIRM",
+                              _news_line(matched, "#b23b3b") if matched else "")
+                    for k, matched in rel:
+                        _card(k.get("label", ""), k.get("description", ""), "#f59e0b",
+                              "rgba(245,158,11,.05)", "\U0001F50E review \u2014 unconfirmed",
+                              _news_line(matched, "#8a6d1a") if matched else "")
+                    for k, matched in sup:
+                        _card(k.get("label", ""), k.get("description", ""), "#3f9142",
+                              "rgba(63,145,66,.05)", "\U0001F7E2 supportive news",
+                              _news_line(matched, "#2f6f4f") if matched else "")
+                    if clr:
+                        chips = " \u00b7 ".join(
+                            f'<span style="font-family:monospace;font-size:11px;color:#3f9142">{k.get("label","")}</span>'
+                            for k in clr)
+                        st.markdown(
+                            f'<div style="padding:8px 12px;margin:5px 0;background:rgba(63,145,66,.04);'
+                            f'border-left:3px solid #3f9142;border-radius:5px;font-size:12px">'
+                            f'<span style="color:#3f9142;font-weight:700">\U0001F7E2 Clear</span> \u00b7 {chips}</div>',
+                            unsafe_allow_html=True)
+                monitors = monitors_by_ticker.get(sel, [])
+                if monitors:
+                    st.markdown("##### Monitoring Checklist")
+                    freq_col = {"QUARTERLY": "#2f6f4f", "EVENT": "#5b4bb0", "MONTHLY": "#b4690e", "ANNUAL": "#2563eb"}
+                    order = {"QUARTERLY": 0, "EVENT": 1, "MONTHLY": 2, "ANNUAL": 3}
+                    for m in sorted(monitors, key=lambda x: order.get(x.get("frequency"), 9)):
+                        fq = m.get("frequency", "")
+                        col = freq_col.get(fq, "#666")
+                        st.markdown(
+                            f'<div style="padding:5px 0;font-size:13px;border-bottom:1px solid rgba(0,0,0,.05)">'
+                            f'<span style="display:inline-block;min-width:88px;font-size:9.5px;font-weight:700;'
+                            f'letter-spacing:.04em;color:#fff;background:{col};padding:2px 7px;border-radius:10px;'
+                            f'text-align:center">{fq}</span> '
+                            f'<span style="font-family:monospace;font-size:11px;color:#888">{m.get("label","")}</span> '
+                            f'\u2014 {m.get("description","")}</div>',
+                            unsafe_allow_html=True)
     st.divider()
 
     # News feed for thesis
