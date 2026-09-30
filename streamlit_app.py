@@ -4106,46 +4106,29 @@ with tab_backtest:
                  "only lists from 2019; the Midcap 50 proxies reach back to 2014.")
 
         # ── Controls ──
-        c1, c2, c3, c4 = st.columns([1.1, 1, 1, 1.2])
+        c1, c2 = st.columns([1.2, 1])
         with c1:
             bt_start = st.date_input("Start", value=date(2015, 6, 1), key="bt_start")
         with c2:
             bt_initial = st.number_input("Initial (₹ lakh)", 1.0, 1000.0, 10.0, 1.0,
                                          key="bt_initial")
-        with c3:
+
+        chk1, chk2, chk3 = st.columns(3)
+        with chk1:
             bt_breadth = st.checkbox("Breadth gate", value=True, key="bt_breadth",
-                                     help="Require breadth to confirm as well as EMA distance")
-        with c4:
-            bt_fear = st.checkbox("Fear multipliers", value=False, key="bt_fear",
-                                  help="India VIX + MOVE size tranches 1.5x / 2x")
-        bt_harvest = st.checkbox("Harvest ladder (book profits above the EMA)",
-                                 value=True, key="bt_harvest")
-        bt_vix_split = st.checkbox(
-            "VIX-regime Nifty/Midcap split *(experimental)*",
-            value=False, key="bt_vix_split",
-            help=(
-                "When enabled, the Nifty/Midcap equity split adapts to VIX regime "
-                "(19-yr statistical analysis, 4,550+ bars). "
-                "Calm/Normal/Fear/Panic → 100% Midcap; "
-                "Elevated 16-20 → 0% Midcap (p=0.61, no edge); "
-                "Stress 25-30 → 55% Midcap / 45% Nifty. "
-                "Adds a second equity curve so you can compare."
-            )
-        )
-        bt_v2 = st.checkbox(
-            "V2 model — ₹10L equity core + ₹4L revolving tactical *(experimental)*",
-            value=False, key="bt_v2",
-            help=(
-                "New capital model: ₹10L always deployed as equity (60% Midcap / 40% Nifty), "
-                "rebalanced each December. Separate ₹4L tactical buffer sits in liquid fund "
-                "(6.5%) and deploys on EMA+breadth triggers using VIX-regime split. "
-                "Annual December harvest: if Nifty YTD ≥ mean+2σ OR Nifty ≥ 10% above 200-EMA, "
-                "all tactical positions are booked back to liquid. No cash floor depletion. "
-                "Results shown normalised to ₹10L for comparison."
-            )
-        )
+                                     help="Require low breadth to confirm deploy "
+                                          "(statistically validated — T1/T2 Sharpe 0.54 vs 0.21 baseline)")
+        with chk2:
+            bt_harvest = st.checkbox("Harvest ladder", value=True, key="bt_harvest",
+                                     help="Book deployed positions back to liquid as EMA recovers "
+                                          "(H2 +12%, H3 +17%, H4 +20% — stats-calibrated thresholds)")
+        with chk3:
+            bt_v2 = st.checkbox("V2 model", value=False, key="bt_v2",
+                                 help="₹10L always-on equity core + ₹4L revolving tactical buffer. "
+                                      "Annual Dec rebalance. Results shown normalised to ₹10L.")
+
         if bt_v2:
-            _cv1, _cv2 = st.columns(2)
+            _cv1, _cv2, _cv3 = st.columns([1, 1, 2])
             with _cv1:
                 bt_v2_core = st.number_input(
                     "Core (₹ lakh)", 1.0, 1000.0, 10.0, 1.0, key="bt_v2_core",
@@ -4154,16 +4137,32 @@ with tab_backtest:
             with _cv2:
                 bt_v2_tactical = st.number_input(
                     "Tactical (₹ lakh)", 1.0, 500.0, 4.0, 1.0, key="bt_v2_tactical",
-                    help="Revolving tactical buffer — liquid until deployed"
+                    help="Revolving tactical buffer — liquid at 6.5% when idle"
                 )
-            bt_v2_vix_gate = st.checkbox(
-                "VIX gate — require min VIX before deploy "
-                "*(T1/T2 need VIX≥20, T3+ need VIX≥25)*",
-                value=True, key="bt_v2_vix_gate",
-                help="Prevents low-fear deploys (VIX<20 Calm/Elevated zones had Sharpe≈0.21 — barely above baseline)"
-            )
+            with _cv3:
+                st.write("")
+                bt_v2_vix_gate = st.checkbox(
+                    "VIX gate — require min VIX before deploy "
+                    "*(T1/T2 need VIX≥20, T3+ need VIX≥25)*",
+                    value=True, key="bt_v2_vix_gate",
+                    help="Filters low-fear deploys (VIX<20 Calm/Elevated had Sharpe≈0.21 — barely above baseline)"
+                )
         else:
             bt_v2_core, bt_v2_tactical, bt_v2_vix_gate = 10.0, 4.0, True
+
+        with st.expander("Advanced options"):
+            bt_fear = st.checkbox("Fear multipliers", value=False, key="bt_fear",
+                                  help="India VIX + MOVE size tranches 1.5x / 2x "
+                                       "(note: credit-stress gauge not stored historically — max 2-of-3 here)")
+            bt_vix_split = st.checkbox(
+                "VIX-regime Nifty/Midcap split",
+                value=False, key="bt_vix_split",
+                help=(
+                    "Adapts Nifty/Midcap split to VIX regime (19-yr analysis, 4,550+ bars). "
+                    "Calm/Normal/Fear/Panic → 100% Midcap; Elevated 16-20 → 0% Midcap; "
+                    "Stress 25-30 → 55% Midcap / 45% Nifty."
+                )
+            )
 
         nifty_rows = _load_series("^NSEI")
         mid_rows = _load_series(mid_sym) if mid_sym != "^NSEI" else nifty_rows
@@ -4299,59 +4298,7 @@ with tab_backtest:
                 f"at the cost of using a different index than the framework specifies."
             )
 
-        # ── Headline ──
-        # The like-for-like comparison is against the SAME allocation with the
-        # tactical reserve left in cash. Buy & hold is fully invested, so it
-        # measures the 40% cash decision, not the ladder's entry rules.
-        edge = res.cagr() - static.cagr()
-        h1, h2, h3 = st.columns(3)
-        h1.metric("Ladder CAGR", f"{res.cagr()*100:.2f}%")
-        h2.metric("Same allocation, no ladder", f"{static.cagr()*100:.2f}%",
-                  delta=f"{edge*100:+.2f} pp from the rules", delta_color="normal")
-        h3.metric("Max drawdown", f"{res.max_drawdown()*100:.1f}%",
-                  delta=f"vs {static.max_drawdown()*100:.1f}% static", delta_color="off")
-
-        st.markdown(
-            f'<div class="fw-h">All four portfolios<span class="rule"></span></div>',
-            unsafe_allow_html=True)
-        comp = pd.DataFrame([
-            {"Portfolio": "Tactical Ladder",
-             "What it is": "35/25 core + 40% tactical deployed by the rules",
-             "CAGR": f"{res.cagr()*100:.2f}%",
-             "Final": f"₹{res.final/100000:.2f}L",
-             "Max DD": f"{res.max_drawdown()*100:.1f}%"},
-            {"Portfolio": "Same allocation, no ladder",
-             "What it is": "35/25 core + 40% left in cash at 6.5%",
-             "CAGR": f"{static.cagr()*100:.2f}%",
-             "Final": f"₹{static.final/100000:.2f}L",
-             "Max DD": f"{static.max_drawdown()*100:.1f}%"},
-            {"Portfolio": "Lump sum",
-             "What it is": "Tactical deployed into midcap on day one, held",
-             "CAGR": f"{lump.cagr()*100:.2f}%",
-             "Final": f"₹{lump.final/100000:.2f}L",
-             "Max DD": f"{lump.max_drawdown()*100:.1f}%"},
-            {"Portfolio": "Fully invested 60/40",
-             "What it is": "No cash at all — an allocation ceiling, not a rules test",
-             "CAGR": f"{bh.cagr()*100:.2f}%",
-             "Final": f"₹{bh.final/100000:.2f}L",
-             "Max DD": f"{bh.max_drawdown()*100:.1f}%"},
-        ])
-        st.dataframe(comp, use_container_width=True, hide_index=True)
-
-        pct_below = sum(
-            1 for i, d in enumerate(res.dates)
-            if res.deployed[i] > 0) / max(1, len(res.dates)) * 100
-        st.caption(
-            f"The ladder held some tactical exposure on {pct_below:.0f}% of bars. "
-            "Read **ladder vs same-allocation-no-ladder** to judge the rules: both "
-            "hold the same 40% reserve, so the only difference is whether it gets "
-            "deployed on dips. Comparing against the fully-invested column instead "
-            "measures the decision to hold a reserve at all — the Nifty sits above "
-            "its 200 EMA roughly 90% of the time, so any waiting reserve is idle "
-            "most of the time whatever the entry rules are."
-        )
-
-        # ── Equity curve ──
+        # ── Equity curve (always shown, overlays all active strategies) ──
         eq_dict: dict = {
             "Date": res.dates,
             "Tactical Ladder": res.equity,
@@ -4360,11 +4307,10 @@ with tab_backtest:
             "Fully invested 60/40": bh.equity,
         }
         if res_vix is not None:
-            # Align to res.dates (run_matrix may start from same series)
             vix_eq_map = dict(zip(res_vix.dates, res_vix.total))
             eq_dict["VIX-regime split"] = [vix_eq_map.get(d) for d in res.dates]
         if res_v2 is not None:
-            # V2 has different starting capital — normalise to ₹10L for chart comparison
+            # Normalise V2 to same starting capital as ladder for visual comparison
             v2_start = res_v2.total[0] if res_v2.total else 1
             ladder_start = res.equity[0] if res.equity else 1
             v2_map = dict(zip(res_v2.dates, res_v2.total))
@@ -4375,47 +4321,124 @@ with tab_backtest:
         eq = pd.DataFrame(eq_dict).set_index("Date")
         st.line_chart(eq, height=300)
 
-        if res_vix is not None:
-            v1, v2, v3 = st.columns(3)
-            v1.metric("VIX-split CAGR", f"{res_vix.cagr()*100:.2f}%",
-                      delta=f"{(res_vix.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
-                      delta_color="normal")
-            v2.metric("VIX-split final", f"₹{res_vix.final/100000:.2f}L",
-                      delta=f"₹{(res_vix.final-res.final)/100000:+.2f}L vs Ladder",
-                      delta_color="normal")
-            v3.metric("VIX-split max DD", f"{res_vix.max_drawdown()*100:.1f}%",
-                      delta=f"{(res_vix.max_drawdown()-res.max_drawdown())*100:+.1f} pp vs Ladder",
-                      delta_color="off")
-            st.caption(
-                "VIX-split uses the **run_matrix engine** with `use_vix_split=True` — "
-                "VIX regime steers Nifty/Midcap allocation at each rebalance. "
-                "Calm/Normal/Fear/Panic → 100% Midcap; Elevated (16-20) → 0% Midcap; "
-                "Stress (25-30) → 55% Midcap / 45% Nifty."
-            )
+        # ── Tabbed detail: Ladder | V2 (or flat when V2 is off) ──
+        def _render_ladder_detail(container=st):
+            """Headline, comparison table, deployment chart, events."""
+            edge = res.cagr() - static.cagr()
+            h1, h2, h3 = container.columns(3)
+            h1.metric("Ladder CAGR", f"{res.cagr()*100:.2f}%")
+            h2.metric("Same allocation, no ladder", f"{static.cagr()*100:.2f}%",
+                      delta=f"{edge*100:+.2f} pp from the rules", delta_color="normal")
+            h3.metric("Max drawdown", f"{res.max_drawdown()*100:.1f}%",
+                      delta=f"vs {static.max_drawdown()*100:.1f}% static", delta_color="off")
 
-        if res_v2 is not None:
-            st.markdown('<div class="fw-h">V2 model results<span class="rule"></span></div>',
-                        unsafe_allow_html=True)
-            w1, w2, w3 = st.columns(3)
+            container.markdown(
+                '<div class="fw-h">All four portfolios<span class="rule"></span></div>',
+                unsafe_allow_html=True)
+            comp = pd.DataFrame([
+                {"Portfolio": "Tactical Ladder",
+                 "What it is": "35/25 core + 40% tactical deployed by the rules",
+                 "CAGR": f"{res.cagr()*100:.2f}%",
+                 "Final": f"₹{res.final/100000:.2f}L",
+                 "Max DD": f"{res.max_drawdown()*100:.1f}%"},
+                {"Portfolio": "Same allocation, no ladder",
+                 "What it is": "35/25 core + 40% left in cash at 6.5%",
+                 "CAGR": f"{static.cagr()*100:.2f}%",
+                 "Final": f"₹{static.final/100000:.2f}L",
+                 "Max DD": f"{static.max_drawdown()*100:.1f}%"},
+                {"Portfolio": "Lump sum",
+                 "What it is": "Tactical deployed into midcap on day one, held",
+                 "CAGR": f"{lump.cagr()*100:.2f}%",
+                 "Final": f"₹{lump.final/100000:.2f}L",
+                 "Max DD": f"{lump.max_drawdown()*100:.1f}%"},
+                {"Portfolio": "Fully invested 60/40",
+                 "What it is": "No cash at all — an allocation ceiling, not a rules test",
+                 "CAGR": f"{bh.cagr()*100:.2f}%",
+                 "Final": f"₹{bh.final/100000:.2f}L",
+                 "Max DD": f"{bh.max_drawdown()*100:.1f}%"},
+            ])
+            container.dataframe(comp, use_container_width=True, hide_index=True)
+            pct_below = sum(
+                1 for i, d in enumerate(res.dates)
+                if res.deployed[i] > 0) / max(1, len(res.dates)) * 100
+            container.caption(
+                f"Ladder held tactical exposure on {pct_below:.0f}% of bars. "
+                "Compare **Ladder vs Same allocation, no ladder** to judge the entry rules: "
+                "both hold the same 40% reserve — the only difference is whether it gets "
+                "deployed on dips."
+            )
+            container.markdown(
+                '<div class="fw-h">Tactical cash vs deployed<span class="rule"></span></div>',
+                unsafe_allow_html=True)
+            dep = pd.DataFrame({
+                "Date": res.dates, "Cash": res.cash, "Deployed": res.deployed,
+            }).set_index("Date")
+            container.area_chart(dep, height=200)
+
+            container.markdown(
+                '<div class="fw-h">Ladder events<span class="rule"></span></div>',
+                unsafe_allow_html=True)
+            if not res.events:
+                container.info("No tier fired over this window with these settings.")
+            else:
+                ev = pd.DataFrame([{
+                    "Date": e.d,
+                    "Action": e.kind.title(),
+                    "Tier": e.tier,
+                    "EMA dist": f"{e.ema_dist:+.1f}%",
+                    "Breadth": "—" if e.breadth is None else f"{e.breadth:.0f}%",
+                    "Amount": "—" if e.amount == 0 else f"₹{e.amount:,.0f}",
+                    "Note": e.note,
+                } for e in res.events])
+                n_dep = sum(1 for e in res.events if e.kind == "deploy")
+                n_har = sum(1 for e in res.events if e.kind == "harvest")
+                container.caption(f"{len(res.events)} events — {n_dep} deploys, {n_har} harvests")
+                container.dataframe(ev, use_container_width=True, hide_index=True, height=320)
+
+            if res_vix is not None:
+                container.markdown(
+                    '<div class="fw-h">VIX-regime split<span class="rule"></span></div>',
+                    unsafe_allow_html=True)
+                v1, v2c, v3 = container.columns(3)
+                v1.metric("VIX-split CAGR", f"{res_vix.cagr()*100:.2f}%",
+                          delta=f"{(res_vix.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
+                          delta_color="normal")
+                v2c.metric("VIX-split final", f"₹{res_vix.final/100000:.2f}L")
+                v3.metric("VIX-split max DD", f"{res_vix.max_drawdown()*100:.1f}%",
+                          delta=f"{(res_vix.max_drawdown()-res.max_drawdown())*100:+.1f} pp",
+                          delta_color="off")
+                container.caption(
+                    "VIX regime steers Nifty/Midcap allocation at each rebalance. "
+                    "Calm/Normal/Fear/Panic → 100% Midcap; Elevated (16-20) → 0% Midcap; "
+                    "Stress (25-30) → 55% Midcap / 45% Nifty."
+                )
+
+        def _render_v2_detail(container=st):
+            """V2 metrics and events."""
+            w1, w2, w3 = container.columns(3)
             w1.metric("V2 CAGR", f"{res_v2.cagr()*100:.2f}%",
                       delta=f"{(res_v2.cagr()-res.cagr())*100:+.2f} pp vs Ladder",
                       delta_color="normal")
             w2.metric("V2 final", f"₹{res_v2.final/100000:.2f}L",
-                      help=f"Starting capital ₹{(bt_v2_core+bt_v2_tactical):.0f}L (₹{bt_v2_core:.0f}L core + ₹{bt_v2_tactical:.0f}L tactical)")
+                      help=f"Starting ₹{(bt_v2_core+bt_v2_tactical):.0f}L "
+                           f"(₹{bt_v2_core:.0f}L core + ₹{bt_v2_tactical:.0f}L tactical)")
             w3.metric("V2 max DD", f"{res_v2.max_drawdown()*100:.1f}%",
                       delta=f"{(res_v2.max_drawdown()-res.max_drawdown())*100:+.1f} pp vs Ladder",
                       delta_color="off")
-            st.caption(
-                f"V2: ₹{bt_v2_core:.0f}L equity core (60% Midcap / 40% Nifty, annual Dec rebalance) "
+            container.caption(
+                f"₹{bt_v2_core:.0f}L equity core (60% Midcap / 40% Nifty, annual Dec rebalance) "
                 f"+ ₹{bt_v2_tactical:.0f}L revolving tactical (liquid at 6.5% when idle). "
                 "December harvest if Nifty YTD ≥ mean+2σ OR Nifty ≥ 10% above 200-EMA. "
-                "Chart curve normalised to same ₹10L start for visual comparison."
+                "Equity curve above is normalised to ₹10L for visual comparison."
             )
-            # V2 harvest events table
-            v2_harvests = [e for e in res_v2.events if e.kind == "harvest"]
-            v2_deploys = [e for e in res_v2.events if e.kind == "deploy"]
-            st.caption(f"V2 events: {len(v2_deploys)} deploys · {len(v2_harvests)} December harvests")
+            container.markdown(
+                '<div class="fw-h">V2 events<span class="rule"></span></div>',
+                unsafe_allow_html=True)
             if res_v2.events:
+                v2_deploys = [e for e in res_v2.events if e.kind == "deploy"]
+                v2_harvests = [e for e in res_v2.events if e.kind == "harvest"]
+                container.caption(f"{len(res_v2.events)} events — "
+                                  f"{len(v2_deploys)} deploys · {len(v2_harvests)} December harvests")
                 ev2 = pd.DataFrame([{
                     "Date": e.d,
                     "Action": "Harvest" if e.kind == "harvest" else "Deploy",
@@ -4424,38 +4447,18 @@ with tab_backtest:
                     "Amount": f"₹{e.amount:,.0f}",
                     "Note": e.note,
                 } for e in res_v2.events])
-                st.dataframe(ev2, use_container_width=True, hide_index=True)
+                container.dataframe(ev2, use_container_width=True, hide_index=True)
+            else:
+                container.info("No V2 events in this window.")
 
-        # ── Deployment state over time ──
-        st.markdown('<div class="fw-h">Tactical cash vs deployed<span class="rule"></span></div>',
-                    unsafe_allow_html=True)
-        dep = pd.DataFrame({
-            "Date": res.dates,
-            "Cash": res.cash,
-            "Deployed": res.deployed,
-        }).set_index("Date")
-        st.area_chart(dep, height=220)
-
-        # ── Events ──
-        st.markdown('<div class="fw-h">Ladder events<span class="rule"></span></div>',
-                    unsafe_allow_html=True)
-        if not res.events:
-            st.info("No tier fired over this window with these settings.")
+        if res_v2 is not None:
+            _tab_ladder, _tab_v2 = st.tabs(["Ladder", "V2 model"])
+            with _tab_ladder:
+                _render_ladder_detail(_tab_ladder)
+            with _tab_v2:
+                _render_v2_detail(_tab_v2)
         else:
-            ev = pd.DataFrame([{
-                "Date": e.d,
-                "Action": e.kind.title(),
-                "Tier": e.tier,
-                "EMA dist": f"{e.ema_dist:+.1f}%",
-                "Breadth": "—" if e.breadth is None else f"{e.breadth:.0f}%",
-                "Amount": "—" if e.amount == 0 else f"₹{e.amount:,.0f}",
-                "Mult": f"{e.multiplier:g}x" if e.kind == "deploy" else "—",
-                "Note": e.note,
-            } for e in res.events])
-            n_dep = sum(1 for e in res.events if e.kind == "deploy")
-            n_har = sum(1 for e in res.events if e.kind == "harvest")
-            st.caption(f"{len(res.events)} events — {n_dep} deploys, {n_har} harvests")
-            st.dataframe(ev, use_container_width=True, hide_index=True, height=320)
+            _render_ladder_detail(st)
 
         # ── Rolling horizon analysis ──────────────────────────────────────
         st.markdown('<div class="fw-h">Investment horizon analysis<span class="rule"></span></div>',
