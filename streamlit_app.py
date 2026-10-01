@@ -2889,6 +2889,7 @@ with tab_perf:
     st.divider()
 
     pc1, pc2 = st.columns(2)
+    setup_by_tid = {p.get("trade_id"): (p.get("setup") or "") for p in D["pos"]}
 
     with pc1:
         st.markdown("#### P&L Attribution")
@@ -2903,12 +2904,16 @@ with tab_perf:
             marker_color=[GREEN if p["pnl"] >= 0 else RED for p in sorted_pos],
             text=[fmt(p["pnl"]) for p in sorted_pos],
             textposition='outside',
+            cliponaxis=False,
             hovertemplate='%{y}: %{x:,.0f}<extra></extra>',
         ))
+        _pv = [p["pnl"] for p in sorted_pos] or [0]
+        _pad = max((abs(v) for v in _pv), default=0) * 0.30 or 1
         fig_attr.update_layout(
             height=max(200, 45 * len(sorted_pos)),
-            margin=dict(l=0, r=60, t=10, b=10),
-            xaxis=dict(showgrid=True, gridcolor="#eef0f3", title="P&L (₹)", zeroline=True, zerolinecolor="#999"),
+            margin=dict(l=10, r=20, t=10, b=10),
+            xaxis=dict(showgrid=True, gridcolor="#eef0f3", title="P&L (₹)", zeroline=True,
+                       zerolinecolor="#999", range=[min(_pv + [0]) - _pad, max(_pv + [0]) + _pad]),
             yaxis=dict(showgrid=False),
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         )
@@ -2916,32 +2921,75 @@ with tab_perf:
 
     with pc2:
         st.markdown("#### Closed Trades")
+        st.caption(f"{len(D['closed'])} exited trades — sortable; click a column header to rank")
         if D["closed"]:
+            closed_rows = []
             for t in D["closed"]:
-                ep = f(t.get("entry_price")) or 0
-                xp = f(t.get("exit_price")) or 0
                 ret = f(t.get("realized_return_pct"))
-                win = (ret or 0) >= 0
-                icon = "✅" if win else "❌"
-                col = GREEN if win else RED
-                ret_s = f"+{ret:.1f}%" if ret and ret > 0 else f"{ret:.1f}%" if ret else "—"
-                reason = t.get("exit_reason", "")
-                ticker = t.get("ticker", "")
-                sleeve = t.get("sleeve", "")
-
-                st.markdown(
-                    f'<div style="padding:8px 12px;margin:3px 0;border-radius:6px;border:1px solid #e5e7eb;'
-                    f'display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
-                    f'<span style="font-weight:700;min-width:85px">{icon} {ticker}</span>'
-                    f'<span class="badge" style="background:#818cf822;color:#818cf8">{sleeve}</span>'
-                    f'<span style="color:#666;font-size:12px">₹{ep:,.0f} → ₹{xp:,.0f}</span>'
-                    f'<span class="badge" style="background:{col}18;color:{col}">{reason}</span>'
-                    f'<span style="color:{col};font-weight:700;font-size:16px;margin-left:auto">{ret_s}</span>'
-                    f'</div>', unsafe_allow_html=True)
+                hd = f(t.get("holding_period_days"))
+                closed_rows.append({
+                    "Result": "Win" if (ret or 0) >= 0 else "Loss",
+                    "Ticker": t.get("ticker", ""), "Sleeve": t.get("sleeve", ""),
+                    "Setup": setup_by_tid.get(t.get("trade_id"), ""),
+                    "Entry": f(t.get("entry_price")), "Exit": f(t.get("exit_price")),
+                    "Return %": round(ret, 1) if ret is not None else None,
+                    "Exit Reason": t.get("exit_reason", ""),
+                    "Hold (d)": int(hd) if hd is not None else None,
+                    "Exit Date": t.get("exit_date"),
+                })
+            df_closed = pd.DataFrame(closed_rows).sort_values("Exit Date", ascending=False, na_position="last")
+            st.dataframe(
+                df_closed, use_container_width=True, hide_index=True, height=360,
+                column_config={
+                    "Return %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Entry": st.column_config.NumberColumn(format="₹%.0f"),
+                    "Exit": st.column_config.NumberColumn(format="₹%.0f"),
+                })
         else:
             st.caption("No closed trades yet.")
 
     st.divider()
+
+    # ── Closed-trade analysis (strategy edge) ──
+    if D["closed"]:
+        st.markdown("#### Closed-Trade Analysis")
+        st.caption("Win rate and average return grouped by exit reason and by setup — where the edge actually is.")
+
+        def _grp_stats(key_fn):
+            g = {}
+            for t in D["closed"]:
+                k = key_fn(t) or "—"
+                ret = f(t.get("realized_return_pct"))
+                g.setdefault(k, []).append(ret if ret is not None else 0.0)
+            out = []
+            for k, rs in g.items():
+                n = len(rs)
+                wins_k = sum(1 for r in rs if r >= 0)
+                out.append({
+                    "Group": k, "Trades": n,
+                    "Win %": round(wins_k / n * 100) if n else 0,
+                    "Avg Return %": round(sum(rs) / n, 1) if n else 0.0,
+                    "Best %": round(max(rs), 1) if rs else 0.0,
+                    "Worst %": round(min(rs), 1) if rs else 0.0,
+                })
+            return pd.DataFrame(sorted(out, key=lambda x: -x["Avg Return %"]))
+
+        _cfg = {
+            "Win %": st.column_config.NumberColumn(format="%d%%"),
+            "Avg Return %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Best %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Worst %": st.column_config.NumberColumn(format="%.1f%%"),
+        }
+        ca1, ca2 = st.columns(2)
+        with ca1:
+            st.markdown("**By Exit Reason**")
+            st.dataframe(_grp_stats(lambda t: t.get("exit_reason")),
+                         hide_index=True, use_container_width=True, column_config=_cfg)
+        with ca2:
+            st.markdown("**By Setup**")
+            st.dataframe(_grp_stats(lambda t: setup_by_tid.get(t.get("trade_id"))),
+                         hide_index=True, use_container_width=True, column_config=_cfg)
+        st.divider()
 
     # Sleeve P&L breakdown chart
     st.markdown("#### Sleeve P&L Breakdown")
@@ -2967,10 +3015,11 @@ with tab_perf:
         marker_color=[SLEEVE_COLORS.get(s, "#666") for s in sl_names],
         text=[fmt(v) for v in sl_vals],
         textposition='outside',
+        cliponaxis=False,
         hovertemplate='%{x}: %{y:,.0f}<extra></extra>',
     ))
     fig_sleeve.update_layout(
-        height=280, margin=dict(l=0, r=0, t=10, b=10),
+        height=280, margin=dict(l=0, r=0, t=28, b=10),
         yaxis=dict(showgrid=True, gridcolor="#eef0f3", title="P&L (₹)", zeroline=True, zerolinecolor="#999"),
         xaxis=dict(showgrid=False),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
