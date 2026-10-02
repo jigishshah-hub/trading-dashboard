@@ -2884,38 +2884,55 @@ with tab_perf:
 
     with pc1:
         st.markdown("#### P&L Attribution")
-        st.caption("Realized + unrealized P&L by stock")
+        _attr_view = st.radio(
+            "P&L attribution view", ["Open (unrealized)", "Realized (closed)"],
+            horizontal=True, label_visibility="collapsed", key="attr_view")
 
-        # Per-ticker P&L = unrealized (open positions) + realized (closed trades).
-        # Unrealized alone is flat whenever prices aren't fresh, so the chart would
-        # read empty; combining with realized makes it reflect actual booked P&L.
-        pnl_by_ticker = {}
-        for p in positions:
-            pnl_by_ticker[p["ticker"]] = pnl_by_ticker.get(p["ticker"], 0) + p["pnl"]
-        for t in D["closed"]:
-            tk = t.get("ticker", "")
-            ep = f(t.get("entry_price")) or 0
-            xp = f(t.get("exit_price")) or 0
-            tlots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id")]
-            tqty = sum(f(l.get("qty")) or 0 for l in tlots)
-            if tqty > 0:
-                pnl_by_ticker[tk] = pnl_by_ticker.get(tk, 0) + (xp - ep) * tqty
+        # Open view: unrealized P&L per open position — naturally bounded by the
+        # number of holdings, so it never skews as trade history grows.
+        # Realized view: booked P&L per closed-trade ticker, capped to the top
+        # winners + top losers with the rest aggregated into "Others", so a long
+        # history stays readable.
+        _TOPN = 7
+        if _attr_view.startswith("Open"):
+            st.caption("Unrealized P&L by open position — current book")
+            attr_items = sorted(((p["ticker"], p["pnl"]) for p in positions),
+                                key=lambda kv: kv[1])
+            _empty_msg = "No open positions to attribute."
+        else:
+            st.caption(f"Realized P&L by closed trade — top {_TOPN} winners/losers; rest as “Others”")
+            realized = {}
+            for t in D["closed"]:
+                tk = t.get("ticker", "")
+                ep = f(t.get("entry_price")) or 0
+                xp = f(t.get("exit_price")) or 0
+                tlots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id")]
+                tqty = sum(f(l.get("qty")) or 0 for l in tlots)
+                if tqty > 0:
+                    pnl_v = (xp - ep) * tqty
+                else:
+                    rp = f(t.get("realized_return_pct"))
+                    pnl_v = ep * (rp / 100) if rp is not None else 0.0
+                realized[tk] = realized.get(tk, 0) + pnl_v
+            ranked = sorted(realized.items(), key=lambda kv: kv[1])
+            if len(ranked) > 2 * _TOPN:
+                mid = ranked[_TOPN:-_TOPN]
+                attr_items = ranked[:_TOPN] + [("Others", sum(v for _, v in mid))] + ranked[-_TOPN:]
+                attr_items = sorted(attr_items, key=lambda kv: kv[1])
             else:
-                rp = f(t.get("realized_return_pct"))
-                if rp is not None:
-                    pnl_by_ticker[tk] = pnl_by_ticker.get(tk, 0) + ep * (rp / 100)
+                attr_items = ranked
+            _empty_msg = "No closed trades to attribute yet."
 
-        attr_items = sorted(pnl_by_ticker.items(), key=lambda kv: kv[1])
         if not attr_items or not any(v for _, v in attr_items):
-            st.info("No P&L to attribute yet — open positions are flat (no fresh prices) "
-                    "and there is no realized P&L.")
+            st.info(_empty_msg)
         else:
             fig_attr = go.Figure()
             fig_attr.add_trace(go.Bar(
                 y=[k for k, _ in attr_items],
                 x=[v for _, v in attr_items],
                 orientation='h',
-                marker_color=[GREEN if v >= 0 else RED for _, v in attr_items],
+                marker_color=[(MUTED if k == "Others" else (GREEN if v >= 0 else RED))
+                              for k, v in attr_items],
                 text=[fmt(v) for _, v in attr_items],
                 textposition='outside',
                 cliponaxis=False,
