@@ -21,10 +21,12 @@ def test_fear_bands_ordered():
 
 
 def test_classify_behaviour():
-    assert c.classify(26, c.VIX_BANDS) == "extreme"
-    assert c.classify(20, c.VIX_BANDS) == "elevated"
-    assert c.classify(15, c.VIX_BANDS) == "watch"
-    assert c.classify(0, c.VIX_BANDS) == "calm"
+    assert c.classify(31, c.VIX_BANDS) == "panic"
+    assert c.classify(26, c.VIX_BANDS) == "stress"
+    assert c.classify(22, c.VIX_BANDS) == "fear"
+    assert c.classify(17, c.VIX_BANDS) == "elevated"
+    assert c.classify(14, c.VIX_BANDS) == "normal"
+    assert c.classify(12, c.VIX_BANDS) == "calm"
     assert c.classify(None, c.VIX_BANDS) is None
 
 
