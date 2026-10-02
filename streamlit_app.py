@@ -3423,6 +3423,25 @@ with tab_thesis:
                         reasons.append(f"price {mv:+.0f}% vs analysis CMP"); rank = max(rank, 2)
                 except Exception:
                     pass
+            # Results / scheduled-review dates (optional; read from note frontmatter via research_sync)
+            def _d(v):
+                try:
+                    return datetime.fromisoformat(str(v)[:10]).date() if v else None
+                except Exception:
+                    return None
+            nres, nrev = _d(n.get("next_results_date")), _d(n.get("next_review_date"))
+            basis = n.get("results_date_basis") or "unspecified"
+            last_rev = _d(n.get("last_updated") or n.get("date_analysed"))
+            today_d = datetime.now().date()
+            if nres:
+                dn = (nres - today_d).days
+                if 0 <= dn <= 7:
+                    reasons.append(f"results in {dn}d ({basis.lower()})"); rank = max(rank, 1)
+                elif dn < 0 and (last_rev is None or last_rev < nres):
+                    reasons.append(f"results date passed ({basis.lower()}), no review since")
+                    rank = max(rank, 2 if basis == "Estimated" else 3)
+            if nrev and today_d >= nrev and (last_rev is None or last_rev < nrev):
+                reasons.append("scheduled review due"); rank = max(rank, 2)
             if age is None:
                 reasons.append("no review date"); rank = max(rank, 2)
             elif age > limit:
@@ -3437,6 +3456,8 @@ with tab_thesis:
                 "Verdict": n.get("analyst_verdict") or "—", "Status": status or "—",
                 "Last review": short_date(n.get("last_updated") or n.get("date_analysed")) or "—",
                 "Days": age if age is not None else "—",
+                "Next results": (f"{nres.strftime('%d %b %Y')} ({basis.lower()})" if nres else "—"),
+                "Next review": (nrev.strftime('%d %b %Y') if nrev else "—"),
                 "Intrinsic (₹)": f"{ivl:,.0f}–{ivh:,.0f}" if ivl and ivh else "—",
                 "Flag": flag, "Why": "; ".join(reasons) or "Within cadence",
             })
@@ -3451,7 +3472,7 @@ with tab_thesis:
             st.dataframe(rq_df, use_container_width=True, hide_index=True)
             st.caption("Cadence: Active notes 100 days, Watch notes 180 days since last_updated. "
                        "Event flags come from killer matches, thesis-threatening news since the last review, and a 15% price move vs the CMP at analysis (held names). "
-                       "Results dates are not yet in the database, so the quarterly results trigger is not shown here. Keyword matches are candidates; confirm against the source.")
+                       "Next results / Next review come from optional note frontmatter (next_results_date, results_date_basis, next_review_date); — means the note has none. A 'deadline' is the SEBI 45-day limit, not a confirmed meeting date. Keyword matches are candidates; confirm against the source.")
         else:
             st.caption("No research notes synced yet.")
     except Exception as _rq_err:
