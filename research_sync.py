@@ -28,6 +28,7 @@ known default.
 """
 
 import argparse
+import datetime
 import glob
 import json
 import os
@@ -62,7 +63,14 @@ FM_FIELDS = {
     "confidence": "confidence",
     "primary_risk": "primary_risk",
     "status": "status",
+    # Review scheduling (added 2026-10-02). Optional; only sent when present
+    # and valid, so notes without them sync exactly as before.
+    "next_results_date": "next_results_date",
+    "results_date_basis": "results_date_basis",
+    "next_review_date": "next_review_date",
 }
+DATE_COLS = {"next_results_date", "next_review_date"}
+BASIS_ALLOWED = {"Confirmed", "Deadline", "Estimated"}
 NUMERIC_COLS = {"cmp_at_analysis", "intrinsic_value_low", "intrinsic_value_high"}
 STATUS_ALLOWED = {"Active", "Watch", "Archived", "Stale"}
 
@@ -221,6 +229,15 @@ def parse_note(path):
     for fm_key, col in FM_FIELDS.items():
         if fm_key in fm:
             val = _num(fm[fm_key]) if col in NUMERIC_COLS else fm[fm_key]
+            if col in DATE_COLS:
+                try:
+                    datetime.datetime.strptime(str(val), "%Y-%m-%d")
+                except ValueError:
+                    warnings.append(f"{ticker}: {fm_key} '{val}' is not YYYY-MM-DD; skipped")
+                    val = None
+            elif col == "results_date_basis" and val not in BASIS_ALLOWED:
+                warnings.append(f"{ticker}: results_date_basis '{val}' not in {sorted(BASIS_ALLOWED)}; skipped")
+                val = None
             if val is not None:
                 note[col] = val
     if note.get("status") and note["status"] not in STATUS_ALLOWED:
