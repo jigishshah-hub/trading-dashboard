@@ -22,12 +22,16 @@ VIX-band reconciliation, step 1.3) happens by editing this file.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # India VIX (^INDIAVIX) — Nifty options implied volatility (local fear gauge).
-# NOTE (step 1.3): these are the ORIGINAL bands; pending reconciliation with the
-# stats-run update. Change here only.
+# Stats-run 6-band regime (1.3, 2026-10-02): 19-yr daily analysis of optimal
+# Nifty/Midcap split by VIX regime.
+#   <13 Calm · 13-16 Normal · 16-20 Elevated (dead zone, p=0.61 not significant)
+#   · 20-25 Fear · 25-30 Stress · >=30 Panic.
 VIX_BANDS = [
-    (25, "extreme"),
-    (20, "elevated"),
-    (15, "watch"),
+    (30, "panic"),
+    (25, "stress"),
+    (20, "fear"),
+    (16, "elevated"),
+    (13, "normal"),
     (0,  "calm"),
 ]
 
@@ -47,7 +51,10 @@ CREDIT_STRESS_BANDS = [
 ]
 
 # Which gauge statuses count as "confirming" a fear signal (signals_on tally).
-FEAR_CONFIRMING_STATUSES = ("elevated", "extreme")
+# MOVE keeps elevated/extreme; VIX uses the stats regime's fear/stress/panic
+# (VIX >= 20), so the 16-20 Elevated dead zone (p=0.61) does NOT confirm.
+MOVE_CONFIRMING_STATUSES = ("elevated", "extreme")
+VIX_CONFIRMING_STATUSES = ("fear", "stress", "panic")
 
 
 def classify(value, bands):
@@ -132,3 +139,11 @@ CAPITAL_ARCH = [
 # ─────────────────────────────────────────────────────────────────────────────
 BACKTEST_VIX_GATE_T1_T2_MIN = 20
 BACKTEST_VIX_GATE_T3PLUS_MIN = 25
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRICE FRESHNESS (open positions marked to last bhavcopy EOD close)
+# Accept the stored close as the current mark when within this many calendar
+# days (covers weekend + holiday clusters); beyond it the feed is stale.
+# ─────────────────────────────────────────────────────────────────────────────
+PRICE_EOD_STALE_DAYS = 6

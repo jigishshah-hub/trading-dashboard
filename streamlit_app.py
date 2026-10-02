@@ -13,6 +13,7 @@ import math
 import yfinance as yf
 
 import backtest_engine as bte
+import config as cfg
 
 # ── Config ──────────────────────────────────────────────────
 st.set_page_config(
@@ -209,7 +210,7 @@ def fetch_fear_gauges():
                 "chg": round(move_chg, 2),
                 "avg_30d": round(move_30d, 1),
                 "spark": [round(v, 1) for v in move_spark],
-                "status": "extreme" if move_close >= 100 else "elevated" if move_close >= 80 else "moderate" if move_close >= 70 else "calm",
+                "status": cfg.classify(move_close, cfg.MOVE_BANDS),
             }
     except Exception:
         pass
@@ -230,7 +231,7 @@ def fetch_fear_gauges():
                 "chg": round(vix_chg, 2),
                 "avg_30d": round(vix_30d, 2),
                 "spark": [round(v, 2) for v in vix_spark],
-                "status": "extreme" if vix_close >= 25 else "elevated" if vix_close >= 20 else "watch" if vix_close >= 15 else "calm",
+                "status": cfg.classify(vix_close, cfg.VIX_BANDS),
             }
     except Exception:
         pass
@@ -262,16 +263,16 @@ def fetch_fear_gauges():
                     "avg_30d": round(ratio_30d, 3),
                     "pctile": round(ratio_pctile, 0),
                     "spark": [round(v, 3) for v in ratio_spark],
-                    "status": "elevated" if ratio_pctile >= 80 else "watch" if ratio_pctile >= 60 else "calm",
+                    "status": cfg.classify(ratio_pctile, cfg.CREDIT_STRESS_BANDS),
                 }
     except Exception:
         pass
 
     # Compute confirmation count
     signals_on = 0
-    if gauges.get("move", {}).get("status") in ("elevated", "extreme"):
+    if gauges.get("move", {}).get("status") in cfg.MOVE_CONFIRMING_STATUSES:
         signals_on += 1
-    if gauges.get("india_vix", {}).get("status") in ("elevated", "extreme"):
+    if gauges.get("india_vix", {}).get("status") in cfg.VIX_CONFIRMING_STATUSES:
         signals_on += 1
     if gauges.get("credit_stress", {}).get("status") == "elevated":
         signals_on += 1
@@ -719,19 +720,9 @@ else:
     breadth = None
 
 # Tactical Ladder tiers (dual-condition: EMA distance + breadth)
-LADDER_TIERS = [
-    {"tier": 1, "threshold":  -8.0, "breadth_max": 40, "deploy_pct": 8, "label": "Tier 1 — Light correction"},
-    {"tier": 2, "threshold": -10.0, "breadth_max": 35, "deploy_pct": 8, "label": "Tier 2 — Moderate correction"},
-    {"tier": 3, "threshold": -15.0, "breadth_max": 30, "deploy_pct": 8, "label": "Tier 3 — Deep correction"},
-    {"tier": 4, "threshold": -20.0, "breadth_max": 25, "deploy_pct": 8, "label": "Tier 4 — Severe correction"},
-    {"tier": 5, "threshold": -25.0, "breadth_max": 20, "deploy_pct": 8, "label": "Tier 5 — Panic lows"},
-]
+LADDER_TIERS = cfg.LADDER_TIERS
 
-CAPITAL_ARCH = [
-    {"name": "Core NiftyBees", "pct": 35, "desc": "Large-cap anchor"},
-    {"name": "Core Nifty Midcap 150", "pct": 25, "desc": "Growth anchor"},
-    {"name": "Tactical Cash Reserve", "pct": 40, "desc": "Liquid/arb funds ~6.5% p.a."},
-]
+CAPITAL_ARCH = cfg.CAPITAL_ARCH
 
 active = [p for p in D["pos"] if p.get("status") == "active"]
 exited = [p for p in D["pos"] if p.get("status") == "exited"]
@@ -750,7 +741,7 @@ for s in D["stocks"]:
         # Accept the stored close whenever it is recent enough to be the latest
         # trading session's — PRICE_EOD_STALE_DAYS covers weekend + holiday
         # clusters; beyond it the feed is treated as stale (dead sync).
-        PRICE_EOD_STALE_DAYS = 6
+        PRICE_EOD_STALE_DAYS = cfg.PRICE_EOD_STALE_DAYS
         is_fresh = True
         if pu:
             try:
@@ -1440,8 +1431,9 @@ with tab_cockpit:
                         "moderate": ("🟡", "#a76a00", "70-80"), "calm": ("🟢", "#216c30", "<70")
                     }),
                     ("India VIX", "india_vix", "Nifty options vol", {
-                        "extreme": ("🔴", "#a92e2e", "≥25"), "elevated": ("🟠", "#c05621", "≥20"),
-                        "watch": ("🟡", "#a76a00", "15-20"), "calm": ("🟢", "#216c30", "<15")
+                        "panic": ("🔴", "#a92e2e", "≥30"), "stress": ("🔴", "#c0341d", "25-30"),
+                        "fear": ("🟠", "#c05621", "20-25"), "elevated": ("🟡", "#a76a00", "16-20"),
+                        "normal": ("🟢", "#2f7d4f", "13-16"), "calm": ("🟢", "#216c30", "<13")
                     }),
                     ("Credit Stress", "credit_stress", "LQD/HYG ratio", {
                         "elevated": ("🟠", "#c05621", "≥80th pctile"),
@@ -1529,10 +1521,7 @@ with tab_cockpit:
                 ))
 
                 # Harvest tier lines (H1-H4)
-                HARVEST_LINES = [
-                    (5, "H1", "#0d9488"), (10, "H2", "#0d9488"),
-                    (15, "H3", "#0d9488"), (20, "H4", "#0d9488"),
-                ]
+                HARVEST_LINES = [(p, l, "#0d9488") for p, l in cfg.HARVEST_LINES]
                 for h_pct, h_label, h_color in HARVEST_LINES:
                     h_price = ema_val * (1 + h_pct / 100)
                     fig_nifty.add_hline(y=h_price, line_dash="dot", line_color=h_color,
@@ -1620,12 +1609,7 @@ with tab_cockpit:
                 'font-size:11px;font-weight:700;color:#115e59">▲ HARVEST — Profit Booking (above 200 EMA)</div>',
                 unsafe_allow_html=True)
 
-            HARVEST_TIERS = [
-                {"id": "H4", "pct": 20, "action": "Book 75%", "note": "euphoria zone"},
-                {"id": "H3", "pct": 17, "action": "Book 50%", "note": "90th pctile"},
-                {"id": "H2", "pct": 12, "action": "Book 25%", "note": "75th pctile"},
-                {"id": "H1", "pct": 5,  "action": "Trail 7%", "note": "set stops"},
-            ]
+            HARVEST_TIERS = cfg.HARVEST_TIERS
 
             # Determine active harvest tier
             active_harvest = None
@@ -3960,7 +3944,7 @@ with tab_framework:
     fear_cols = st.columns(3)
     fear_gauges_def = [
         ("MOVE Index", "≥ 80 (extreme ≥ 100)", "US rates volatility → global risk-off"),
-        ("India VIX", "≥ 20 (extreme ≥ 25)", "Domestic implied volatility spike"),
+        ("India VIX", "≥ 20 (Fear/Stress/Panic)", "Domestic implied volatility spike"),
         ("Credit Stress", "LQD/HYG ratio ≥ 80th pctile", "IG–Govt spread widens — credit fear"),
     ]
     for i, (name, trigger, desc) in enumerate(fear_gauges_def):
@@ -4276,9 +4260,9 @@ with tab_backtest:
                     for r in _load_series("^MOVE")}
             for d in series_dates:
                 on = 0
-                if vix_by_date.get(d) is not None and vix_by_date.get(d, 0) >= 20:
+                if vix_by_date.get(d) is not None and vix_by_date.get(d, 0) >= cfg.FEAR_SIGNAL_VIX_MIN:
                     on += 1
-                if move.get(d) is not None and move.get(d, 0) >= 80:
+                if move.get(d) is not None and move.get(d, 0) >= cfg.FEAR_SIGNAL_MOVE_MIN:
                     on += 1
                 fear_map[d] = on   # credit-stress gauge not stored; max 2 of 3 here
 
