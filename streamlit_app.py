@@ -744,11 +744,18 @@ for s in D["stocks"]:
     cp = s.get("current_price")
     pu = s.get("price_updated_at")
     if cp is not None:
+        # Open positions are marked to the last bhavcopy (EOD) close, not an
+        # intraday feed. A 24h wall-clock window wrongly drops that close every
+        # weekend and market holiday (e.g. Gandhi Jayanti), silently zeroing P&L.
+        # Accept the stored close whenever it is recent enough to be the latest
+        # trading session's — PRICE_EOD_STALE_DAYS covers weekend + holiday
+        # clusters; beyond it the feed is treated as stale (dead sync).
+        PRICE_EOD_STALE_DAYS = 6
         is_fresh = True
         if pu:
             try:
                 updated = datetime.fromisoformat(str(pu).replace("Z", "+00:00"))
-                is_fresh = (datetime.now(timezone.utc) - updated) < timedelta(hours=24)
+                is_fresh = (datetime.now(timezone.utc) - updated) <= timedelta(days=PRICE_EOD_STALE_DAYS)
             except Exception:
                 is_fresh = False
         if is_fresh:
@@ -2893,31 +2900,54 @@ with tab_perf:
 
     with pc1:
         st.markdown("#### P&L Attribution")
-        st.caption("Current P&L contribution by position")
+        st.caption("Realized + unrealized P&L by stock")
 
-        sorted_pos = sorted(positions, key=lambda p: p["pnl"])
-        fig_attr = go.Figure()
-        fig_attr.add_trace(go.Bar(
-            y=[p["ticker"] for p in sorted_pos],
-            x=[p["pnl"] for p in sorted_pos],
-            orientation='h',
-            marker_color=[GREEN if p["pnl"] >= 0 else RED for p in sorted_pos],
-            text=[fmt(p["pnl"]) for p in sorted_pos],
-            textposition='outside',
-            cliponaxis=False,
-            hovertemplate='%{y}: %{x:,.0f}<extra></extra>',
-        ))
-        _pv = [p["pnl"] for p in sorted_pos] or [0]
-        _pad = max((abs(v) for v in _pv), default=0) * 0.30 or 1
-        fig_attr.update_layout(
-            height=max(200, 45 * len(sorted_pos)),
-            margin=dict(l=10, r=20, t=10, b=10),
-            xaxis=dict(showgrid=True, gridcolor="#eef0f3", title="P&L (₹)", zeroline=True,
-                       zerolinecolor="#999", range=[min(_pv + [0]) - _pad, max(_pv + [0]) + _pad]),
-            yaxis=dict(showgrid=False),
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        )
-        st.plotly_chart(fig_attr, use_container_width=True)
+        # Per-ticker P&L = unrealized (open positions) + realized (closed trades).
+        # Unrealized alone is flat whenever prices aren't fresh, so the chart would
+        # read empty; combining with realized makes it reflect actual booked P&L.
+        pnl_by_ticker = {}
+        for p in positions:
+            pnl_by_ticker[p["ticker"]] = pnl_by_ticker.get(p["ticker"], 0) + p["pnl"]
+        for t in D["closed"]:
+            tk = t.get("ticker", "")
+            ep = f(t.get("entry_price")) or 0
+            xp = f(t.get("exit_price")) or 0
+            tlots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id")]
+            tqty = sum(f(l.get("qty")) or 0 for l in tlots)
+            if tqty > 0:
+                pnl_by_ticker[tk] = pnl_by_ticker.get(tk, 0) + (xp - ep) * tqty
+            else:
+                rp = f(t.get("realized_return_pct"))
+                if rp is not None:
+                    pnl_by_ticker[tk] = pnl_by_ticker.get(tk, 0) + ep * (rp / 100)
+
+        attr_items = sorted(pnl_by_ticker.items(), key=lambda kv: kv[1])
+        if not attr_items or not any(v for _, v in attr_items):
+            st.info("No P&L to attribute yet — open positions are flat (no fresh prices) "
+                    "and there is no realized P&L.")
+        else:
+            fig_attr = go.Figure()
+            fig_attr.add_trace(go.Bar(
+                y=[k for k, _ in attr_items],
+                x=[v for _, v in attr_items],
+                orientation='h',
+                marker_color=[GREEN if v >= 0 else RED for _, v in attr_items],
+                text=[fmt(v) for _, v in attr_items],
+                textposition='outside',
+                cliponaxis=False,
+                hovertemplate='%{y}: %{x:,.0f}<extra></extra>',
+            ))
+            _pv = [v for _, v in attr_items] or [0]
+            _pad = max((abs(v) for v in _pv), default=0) * 0.30 or 1
+            fig_attr.update_layout(
+                height=max(200, 45 * len(attr_items)),
+                margin=dict(l=10, r=20, t=10, b=10),
+                xaxis=dict(showgrid=True, gridcolor="#eef0f3", title="P&L (₹)", zeroline=True,
+                           zerolinecolor="#999", range=[min(_pv + [0]) - _pad, max(_pv + [0]) + _pad]),
+                yaxis=dict(showgrid=False),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig_attr, use_container_width=True)
 
     with pc2:
         st.markdown("#### Closed Trades")
@@ -3391,92 +3421,6 @@ with tab_thesis:
         st.caption("Killers = \U0001F534 possible trigger (confirm) \u00b7 \U0001F7E1 review \u00b7 \U0001F7E2 clear, over total active. A killer only attaches a news card when the news is adverse; positive/neutral news stays in the Material News Feed. Matches are keyword candidates \u2014 confirm against the source.")
     else:
         st.caption("No open positions.")
-
-    # -- Review Queue (read-only; derived from notes, killers and news already loaded) --
-    # Purely additive: never writes to Supabase and is wrapped so a failure cannot break this tab.
-    st.markdown("##### Review Queue")
-    try:
-        _STALE_DAYS = {"active": 100, "watch": 180}
-        _held = {p["ticker"]: p for p in positions}
-        rq_rows = []
-        for t in sorted(notes_by_ticker):
-            n = notes_by_ticker[t]
-            status = (n.get("status") or "").strip()
-            limit = _STALE_DAYS.get(status.lower(), 180)
-            age = days_since(n.get("last_updated") or n.get("date_analysed"))
-            reasons, rank = [], 0
-            _kl, _trig, _rel, _sup, _clr = assess_cache.get(t) or _assess(t)
-            if _trig:
-                reasons.append(f"{len(_trig)} killer(s) possibly triggered"); rank = max(rank, 3)
-            elif _rel:
-                reasons.append(f"{len(_rel)} killer(s) with related news"); rank = max(rank, 2)
-            threats = [x for x in D["news"] if x.get("ticker") == t and x.get("severity_tag") == "thesis-threatening"
-                       and (age is None or (days_since(x.get("published_at")) or 0) <= age)]
-            if threats:
-                reasons.append(f"{len(threats)} thesis-threatening news since last review"); rank = max(rank, 3)
-            p = _held.get(t)
-            base = n.get("cmp_at_analysis")
-            if p and base and p.get("cmp"):
-                try:
-                    mv = (float(p["cmp"]) / float(base) - 1) * 100
-                    if abs(mv) >= 15:
-                        reasons.append(f"price {mv:+.0f}% vs analysis CMP"); rank = max(rank, 2)
-                except Exception:
-                    pass
-            # Results / scheduled-review dates (optional; read from note frontmatter via research_sync)
-            def _d(v):
-                try:
-                    return datetime.fromisoformat(str(v)[:10]).date() if v else None
-                except Exception:
-                    return None
-            nres, nrev = _d(n.get("next_results_date")), _d(n.get("next_review_date"))
-            basis = n.get("results_date_basis") or "unspecified"
-            last_rev = _d(n.get("last_updated") or n.get("date_analysed"))
-            today_d = datetime.now().date()
-            if nres:
-                dn = (nres - today_d).days
-                if 0 <= dn <= 7:
-                    reasons.append(f"results in {dn}d ({basis.lower()})"); rank = max(rank, 1)
-                elif dn < 0 and (last_rev is None or last_rev < nres):
-                    reasons.append(f"results date passed ({basis.lower()}), no review since")
-                    rank = max(rank, 2 if basis == "Estimated" else 3)
-            if nrev and today_d >= nrev and (last_rev is None or last_rev < nrev):
-                reasons.append("scheduled review due"); rank = max(rank, 2)
-            if age is None:
-                reasons.append("no review date"); rank = max(rank, 2)
-            elif age > limit:
-                reasons.append(f"stale: {age}d > {limit}d limit"); rank = max(rank, 2)
-            elif age > limit - 20:
-                reasons.append(f"review due within {limit - age}d"); rank = max(rank, 1)
-            flag = {3: "\U0001F534 Review now", 2: "\U0001F7E1 Overdue / check", 1: "\U0001F7E0 Due soon", 0: "\U0001F7E2 OK"}[rank]
-            ivl, ivh = n.get("intrinsic_value_low"), n.get("intrinsic_value_high")
-            rq_rows.append({
-                "_rank": rank, "_age": age if age is not None else 9999,
-                "Ticker": t, "Held": "✅" if p else "",
-                "Verdict": n.get("analyst_verdict") or "—", "Status": status or "—",
-                "Last review": short_date(n.get("last_updated") or n.get("date_analysed")) or "—",
-                "Days": age if age is not None else "—",
-                "Next results": (f"{nres.strftime('%d %b %Y')} ({basis.lower()})" if nres else "—"),
-                "Next review": (nrev.strftime('%d %b %Y') if nrev else "—"),
-                "Intrinsic (₹)": f"{ivl:,.0f}–{ivh:,.0f}" if ivl and ivh else "—",
-                "Flag": flag, "Why": "; ".join(reasons) or "Within cadence",
-            })
-        if rq_rows:
-            rq_rows.sort(key=lambda r: (-r["_rank"], -r["_age"]))
-            rq_df = pd.DataFrame(rq_rows).drop(columns=["_rank", "_age"])
-            n_due = sum(1 for r in rq_rows if r["_rank"] >= 2)
-            st.caption(f"{n_due} of {len(rq_rows)} note(s) need attention. Sorted by urgency, then age.")
-            only_due = st.checkbox("Show only items needing attention", value=False, key="rq_only_due")
-            if only_due:
-                rq_df = rq_df[rq_df["Flag"].str.contains("now|Overdue|soon")]
-            st.dataframe(rq_df, use_container_width=True, hide_index=True)
-            st.caption("Cadence: Active notes 100 days, Watch notes 180 days since last_updated. "
-                       "Event flags come from killer matches, thesis-threatening news since the last review, and a 15% price move vs the CMP at analysis (held names). "
-                       "Next results / Next review come from optional note frontmatter (next_results_date, results_date_basis, next_review_date); — means the note has none. A 'deadline' is the SEBI 45-day limit, not a confirmed meeting date. Keyword matches are candidates; confirm against the source.")
-        else:
-            st.caption("No research notes synced yet.")
-    except Exception as _rq_err:
-        st.caption(f"Review queue unavailable: {_rq_err}")
 
     st.divider()
 
