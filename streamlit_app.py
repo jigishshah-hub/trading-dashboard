@@ -3392,6 +3392,71 @@ with tab_thesis:
     else:
         st.caption("No open positions.")
 
+    # -- Review Queue (read-only; derived from notes, killers and news already loaded) --
+    # Purely additive: never writes to Supabase and is wrapped so a failure cannot break this tab.
+    st.markdown("##### Review Queue")
+    try:
+        _STALE_DAYS = {"active": 100, "watch": 180}
+        _held = {p["ticker"]: p for p in positions}
+        rq_rows = []
+        for t in sorted(notes_by_ticker):
+            n = notes_by_ticker[t]
+            status = (n.get("status") or "").strip()
+            limit = _STALE_DAYS.get(status.lower(), 180)
+            age = days_since(n.get("last_updated") or n.get("date_analysed"))
+            reasons, rank = [], 0
+            _kl, _trig, _rel, _sup, _clr = assess_cache.get(t) or _assess(t)
+            if _trig:
+                reasons.append(f"{len(_trig)} killer(s) possibly triggered"); rank = max(rank, 3)
+            elif _rel:
+                reasons.append(f"{len(_rel)} killer(s) with related news"); rank = max(rank, 2)
+            threats = [x for x in D["news"] if x.get("ticker") == t and x.get("severity_tag") == "thesis-threatening"
+                       and (age is None or (days_since(x.get("published_at")) or 0) <= age)]
+            if threats:
+                reasons.append(f"{len(threats)} thesis-threatening news since last review"); rank = max(rank, 3)
+            p = _held.get(t)
+            base = n.get("cmp_at_analysis")
+            if p and base and p.get("cmp"):
+                try:
+                    mv = (float(p["cmp"]) / float(base) - 1) * 100
+                    if abs(mv) >= 15:
+                        reasons.append(f"price {mv:+.0f}% vs analysis CMP"); rank = max(rank, 2)
+                except Exception:
+                    pass
+            if age is None:
+                reasons.append("no review date"); rank = max(rank, 2)
+            elif age > limit:
+                reasons.append(f"stale: {age}d > {limit}d limit"); rank = max(rank, 2)
+            elif age > limit - 20:
+                reasons.append(f"review due within {limit - age}d"); rank = max(rank, 1)
+            flag = {3: "\U0001F534 Review now", 2: "\U0001F7E1 Overdue / check", 1: "\U0001F7E0 Due soon", 0: "\U0001F7E2 OK"}[rank]
+            ivl, ivh = n.get("intrinsic_value_low"), n.get("intrinsic_value_high")
+            rq_rows.append({
+                "_rank": rank, "_age": age if age is not None else 9999,
+                "Ticker": t, "Held": "✅" if p else "",
+                "Verdict": n.get("analyst_verdict") or "—", "Status": status or "—",
+                "Last review": short_date(n.get("last_updated") or n.get("date_analysed")) or "—",
+                "Days": age if age is not None else "—",
+                "Intrinsic (₹)": f"{ivl:,.0f}–{ivh:,.0f}" if ivl and ivh else "—",
+                "Flag": flag, "Why": "; ".join(reasons) or "Within cadence",
+            })
+        if rq_rows:
+            rq_rows.sort(key=lambda r: (-r["_rank"], -r["_age"]))
+            rq_df = pd.DataFrame(rq_rows).drop(columns=["_rank", "_age"])
+            n_due = sum(1 for r in rq_rows if r["_rank"] >= 2)
+            st.caption(f"{n_due} of {len(rq_rows)} note(s) need attention. Sorted by urgency, then age.")
+            only_due = st.checkbox("Show only items needing attention", value=False, key="rq_only_due")
+            if only_due:
+                rq_df = rq_df[rq_df["Flag"].str.contains("now|Overdue|soon")]
+            st.dataframe(rq_df, use_container_width=True, hide_index=True)
+            st.caption("Cadence: Active notes 100 days, Watch notes 180 days since last_updated. "
+                       "Event flags come from killer matches, thesis-threatening news since the last review, and a 15% price move vs the CMP at analysis (held names). "
+                       "Results dates are not yet in the database, so the quarterly results trigger is not shown here. Keyword matches are candidates; confirm against the source.")
+        else:
+            st.caption("No research notes synced yet.")
+    except Exception as _rq_err:
+        st.caption(f"Review queue unavailable: {_rq_err}")
+
     st.divider()
 
     # -- Research Library (all notes, collapsed) --
