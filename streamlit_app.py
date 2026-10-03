@@ -61,6 +61,7 @@ def load():
         "research_notes": sb.table("research_notes").select("*").execute().data or [],
         "thesis_killers": sb.table("thesis_killers").select("*").eq("is_active", True).execute().data or [],
         "monitoring_checklist": sb.table("monitoring_checklist").select("*").eq("is_active", True).execute().data or [],
+        "alert_log": sb.table("alert_log").select("ticker,level,reason,detail,sent_at").order("sent_at", desc=True).limit(50).execute().data or [],
     }
 
 D = load()
@@ -1295,6 +1296,47 @@ with tab_cockpit:
             f'<div style="padding:4px 12px;font-weight:600;color:#d97706;font-size:13px">⚡ {len(warning_alerts)} Watch Item(s)</div>'
             f'{html}</div>', unsafe_allow_html=True)
 
+    # ── Market Alerts from alert_log (last 24 h) ────────────
+    _al_cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+    _al_rows = [r for r in D.get("alert_log", [])
+                if r.get("sent_at", "") >= _al_cutoff]
+
+    def _al_time_ago(iso):
+        try:
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).replace(tzinfo=None)
+            mins = int((datetime.utcnow() - dt).total_seconds() / 60)
+            return f"{mins}m ago" if mins < 60 else f"{mins // 60}h ago"
+        except Exception:
+            return ""
+
+    def _al_render_group(rows, border, bg, label_color):
+        if not rows:
+            return
+        lines = "".join(
+            f'<div style="padding:4px 12px;font-size:12px;display:flex;justify-content:space-between">'
+            f'<span><strong>{r["ticker"]}</strong> — {r.get("detail","")}</span>'
+            f'<span style="color:#888;font-size:11px">{r["reason"].replace("_"," ")} · {_al_time_ago(r["sent_at"])}</span>'
+            f'</div>'
+            for r in rows
+        )
+        st.markdown(
+            f'<div style="background:{bg};border:1px solid {border};border-radius:10px;'
+            f'padding:6px 4px;margin-bottom:8px">'
+            f'<div style="padding:4px 12px;font-weight:600;color:{label_color};font-size:13px">'
+            f'{rows[0]["level"]} · {len(rows)} alert{"s" if len(rows)>1 else ""}</div>'
+            f'{lines}</div>', unsafe_allow_html=True)
+
+    with st.expander(f"📡 Market Alerts — last 24h  ({len(_al_rows)} fired)", expanded=bool(_al_rows)):
+        if _al_rows:
+            _al_render_group([r for r in _al_rows if r["level"] == "DANGER"],
+                             "#ef4444", "rgba(239,68,68,.05)", "#dc2626")
+            _al_render_group([r for r in _al_rows if r["level"] == "WARNING"],
+                             "#f59e0b", "rgba(245,158,11,.05)", "#d97706")
+            _al_render_group([r for r in _al_rows if r["level"] == "INFO"],
+                             "#3b82f6", "rgba(59,130,246,.05)", "#2563eb")
+        else:
+            st.caption("No market alerts fired in the last 24 hours.")
+
     # ════════════════════════════════════════════════════════
     # ① MARKET REGIME — "What's the environment?"
     # ════════════════════════════════════════════════════════
@@ -2198,12 +2240,14 @@ with tab_positions:
                     _ps_atr      = float(_ps_tech["ATR"].iloc[-1])
                     _ps_52w_high = float(_ps_tech["Close"].max())
                     _ps_52w_low  = float(_ps_tech["Close"].min())
-                    # Force-update entry/target in session state when ticker changes
+                    # Force-update entry/target/qty in session state when ticker changes
                     if st.session_state.get("_ps_last_ticker") != _ps_ticker:
                         st.session_state["ps_entry"]  = round(_ps_cmp_live, 2)
                         st.session_state["ps_target"] = round(_ps_cmp_live * 1.15, 2)
                         st.session_state["ps_stop_manual"] = round(_ps_cmp_live * 0.95, 2)
                         st.session_state["_ps_last_ticker"] = _ps_ticker
+                        # Remove qty so value=_ps_shares takes effect on next render
+                        st.session_state.pop("ps_qty", None)
                     st.success(
                         f"**{_ps_base}** ({_ps_exchange}) — "
                         f"CMP ₹{_ps_cmp_live:,.2f} · ATR(14) ₹{_ps_atr:,.2f} · "
@@ -2261,6 +2305,10 @@ with tab_positions:
         st.divider()
         if _ps_risk_per > 0 and _ps_entry > 0 and _ps_target > _ps_entry:
             _ps_shares   = int(_ps_risk_amt / _ps_risk_per)
+            # Sync qty to max shares whenever the computed max changes
+            if st.session_state.get("_ps_last_shares") != _ps_shares:
+                st.session_state["ps_qty"] = _ps_shares
+                st.session_state["_ps_last_shares"] = _ps_shares
             _ps_r        = _ps_reward / _ps_risk_per
             _ps_stop_pct = _ps_risk_per / _ps_entry * 100
             _ps_tgt_pct  = _ps_reward / _ps_entry * 100
