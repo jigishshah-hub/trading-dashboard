@@ -2198,12 +2198,14 @@ with tab_positions:
                     _ps_atr      = float(_ps_tech["ATR"].iloc[-1])
                     _ps_52w_high = float(_ps_tech["Close"].max())
                     _ps_52w_low  = float(_ps_tech["Close"].min())
-                    # Force-update entry/target in session state when ticker changes
+                    # Force-update entry/target/qty in session state when ticker changes
                     if st.session_state.get("_ps_last_ticker") != _ps_ticker:
                         st.session_state["ps_entry"]  = round(_ps_cmp_live, 2)
                         st.session_state["ps_target"] = round(_ps_cmp_live * 1.15, 2)
                         st.session_state["ps_stop_manual"] = round(_ps_cmp_live * 0.95, 2)
                         st.session_state["_ps_last_ticker"] = _ps_ticker
+                        # Remove qty so value=_ps_shares takes effect on next render
+                        st.session_state.pop("ps_qty", None)
                     st.success(
                         f"**{_ps_base}** ({_ps_exchange}) — "
                         f"CMP ₹{_ps_cmp_live:,.2f} · ATR(14) ₹{_ps_atr:,.2f} · "
