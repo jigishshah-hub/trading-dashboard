@@ -1262,9 +1262,594 @@ def _news_line(n, color="#888"):
             f'<br><span style="color:#999">{meta}</span>{snip_html}</div>')
 
 
-tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system, tab_framework, tab_backtest = st.tabs([
-    "🎯 Cockpit", "📊 Positions", "⚡ Risk", "📈 Performance", "🔬 Thesis Monitor", "⚙️ System & Data", "🔄 Full Cycle Framework", "🧪 Backtest"
+tab_overview, tab_cockpit, tab_positions, tab_risk, tab_perf, tab_thesis, tab_system, tab_framework, tab_backtest = st.tabs([
+    "🚀 Overview", "🎯 Cockpit", "📊 Positions", "⚡ Risk", "📈 Performance", "🔬 Thesis Monitor", "⚙️ System & Data", "🔄 Full Cycle Framework", "🧪 Backtest"
 ])
+
+# ═══════════════════════════════════════════════════════════
+# TAB 0 — OVERVIEW (V3 Command Center)
+# ═══════════════════════════════════════════════════════════
+with tab_overview:
+
+    # ── Compute system state (same logic as Cockpit tab) ──────
+    _ov_pct  = nifty["pct_from_ema"] if nifty else None
+    _ov_bpct = breadth["pct_above"] if breadth else None
+    _ov_fg_s = fear_gauges.get("signals_on", 0) if fear_gauges else 0
+
+    if nifty and _ov_pct is not None:
+        _p = _ov_pct
+        _b = _ov_bpct
+
+        def _ov_tier_met(ema_thr, b_max):
+            return _p <= ema_thr and _b is not None and _b <= b_max
+
+        if _ov_tier_met(-25, 20):
+            _ov_state, _ov_icon, _ov_color, _ov_bg = "DEPLOY ALL", "🔴", "#a92e2e", "#feecec"
+            _ov_perm = "FULL DEPLOYMENT — ALL 5 TIERS"
+        elif _ov_tier_met(-20, 25):
+            _ov_state, _ov_icon, _ov_color, _ov_bg = "DEPLOY T4", "🟠", "#c05621", "#fff0e6"
+            _ov_perm = "DEPLOY TIER 4"
+        elif _ov_tier_met(-15, 30):
+            _ov_state, _ov_icon, _ov_color, _ov_bg = "DEPLOY T3", "🟡", "#a76a00", "#fff6dd"
+            _ov_perm = "DEPLOY TIER 3"
+        elif _ov_tier_met(-10, 35):
+            _ov_state, _ov_icon, _ov_color, _ov_bg = "DEPLOY T2", "🟡", "#a76a00", "#fff6dd"
+            _ov_perm = "DEPLOY TIER 2"
+        elif _ov_tier_met(-8, 40):
+            _ov_state, _ov_icon, _ov_color, _ov_bg = "DEPLOY T1", "🟡", "#a76a00", "#fff6dd"
+            _ov_perm = "DEPLOY TIER 1"
+        elif _p >= 20 and _b is not None and _b >= 80:
+            _ov_state, _ov_icon, _ov_color, _ov_bg = "OVEREXTENDED", "⚡", "#7c3aed", "#f3f0ff"
+            _ov_perm = "HARVEST — peel tactical to cash"
+        elif _p >= 15:
+            _ov_state, _ov_icon, _ov_color, _ov_bg = "EXTENDED", "📈", "#2563eb", "#eff6ff"
+            _ov_perm = "MONITOR — approaching harvest"
+        elif _p <= -5 and (_b is None or _b > 40):
+            _ov_state, _ov_icon, _ov_color, _ov_bg = "CAUTION", "⚠️", "#a76a00", "#fff6dd"
+            _ov_perm = "EMA DIPPED — breadth unconfirmed, HOLD"
+        else:
+            _ov_state, _ov_icon, _ov_color, _ov_bg = "NORMAL", "🟢", "#216c30", "#eaf7ed"
+            _ov_perm = "HOLD / WAIT FOR TRIGGER"
+    else:
+        _ov_state, _ov_icon, _ov_color, _ov_bg, _ov_perm = "UNAVAILABLE", "⚪", "#888", "#f3f4f6", "Data unavailable"
+
+    # ── Header ────────────────────────────────────────────────
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    _ov_now = datetime.now(_IST)
+    _hdr_l, _hdr_r = st.columns([3, 1])
+    with _hdr_l:
+        st.markdown(
+            '<div style="margin-bottom:2px">'
+            '<span style="font-size:22px;font-weight:800">India Master Portfolio</span> '
+            '<span style="font-size:14px;color:#667085;font-weight:500">· V3 Command Center</span></div>'
+            f'<div style="font-size:12px;color:#9ca3af">'
+            f'{_ov_now.strftime("%d %b %Y · %H:%M IST")} · Auto-refresh 60s</div>',
+            unsafe_allow_html=True)
+    with _hdr_r:
+        st.markdown(
+            '<div style="text-align:right;margin-top:10px">'
+            '<span style="background:#dcfce7;color:#166534;border-radius:99px;padding:4px 12px;'
+            'font-size:12px;font-weight:700">● LIVE</span></div>',
+            unsafe_allow_html=True)
+        if st.button("↺ Refresh", key="ov_refresh"):
+            st.cache_data.clear()
+            st.rerun()
+
+    # ── ROW 1 — Market State Cards ────────────────────────────
+    _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+
+    if nifty and _ov_pct is not None:
+        _m1.metric("Nifty 50", f"{nifty['price']:,.0f}",
+                   delta=f"{nifty['daily_chg']:+.2f}%", delta_color="normal")
+        _m1.caption(f"{_ov_pct:+.2f}% vs EMA · T1 @ {nifty['ema200']*0.92:,.0f}")
+    else:
+        _m1.metric("Nifty 50", "—")
+
+    _vix_g = fear_gauges.get("india_vix") if fear_gauges else None
+    if _vix_g:
+        _m2.metric("India VIX", f"{_vix_g['value']}", delta=f"{_vix_g['chg']:+.1f}%", delta_color="inverse")
+        _m2.caption(f"Status: {_vix_g['status'].upper()}")
+    else:
+        _m2.metric("India VIX", "—")
+
+    _move_g = fear_gauges.get("move") if fear_gauges else None
+    if _move_g:
+        _m3.metric("MOVE Index", f"{_move_g['value']}", delta=f"{_move_g['chg']:+.1f}%", delta_color="inverse")
+        _m3.caption(f"Status: {_move_g['status'].upper()}")
+    else:
+        _m3.metric("MOVE Index", "—")
+
+    _credit_g = fear_gauges.get("credit_stress") if fear_gauges else None
+    if _credit_g:
+        _m4.metric("Credit Stress", f"{_credit_g['pctile']:.0f}th %ile",
+                   delta=f"{_credit_g['chg']:+.2f}%", delta_color="inverse")
+        _m4.caption(f"Status: {_credit_g['status'].upper()}")
+    else:
+        _m4.metric("Credit Stress", "—")
+
+    _m5.markdown(
+        f'<div style="background:{_ov_bg};border:1px solid {_ov_color}40;border-radius:10px;'
+        f'padding:12px 14px;margin-top:0">'
+        f'<div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;'
+        f'letter-spacing:.04em">Market Regime</div>'
+        f'<div style="font-size:18px;font-weight:800;color:{_ov_color};margin:4px 0">{_ov_icon} {_ov_state}</div>'
+        f'<div style="font-size:11px;color:{_ov_color}">{_ov_fg_s}/3 fear signals</div>'
+        f'</div>', unsafe_allow_html=True)
+
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+
+    # ── ROW 2 — Decision Card | Cycle Ladder | Fear Gauges ────
+    _dc, _lc, _gc = st.columns([1.2, 1.5, 1.3])
+
+    with _dc:
+        st.markdown("**Today's Decision**")
+        st.markdown(
+            f'<div style="background:{_ov_bg};border:1.5px solid {_ov_color}60;border-radius:10px;'
+            f'padding:14px 16px;margin-bottom:8px">'
+            f'<div style="font-size:24px;font-weight:800;color:{_ov_color};margin-bottom:4px">'
+            f'{_ov_icon} {_ov_state}</div>'
+            f'<div style="font-size:12px;color:#555;font-weight:500">{_ov_perm}</div>'
+            f'</div>', unsafe_allow_html=True)
+
+        # Why? checklist
+        if nifty and _ov_pct is not None:
+            _nifty_below = _ov_pct < 0
+            _t1_met      = _ov_pct <= -8.0
+            _breadth_ok  = _ov_bpct is not None and _ov_bpct <= 40
+            _fear_up     = _ov_fg_s >= 1
+            _why_rows = [
+                ("Nifty below 200 EMA", _nifty_below, f"{_ov_pct:+.2f}%"),
+                ("T1 threshold ≥8% below EMA", _t1_met, f"threshold −8.0%, now {_ov_pct:.2f}%"),
+                ("Breadth ≤40% confirmed", _breadth_ok,
+                 f"{_ov_bpct:.0f}% above DMA" if _ov_bpct is not None else "data unavailable"),
+                ("Fear gauge ≥1 elevated", _fear_up, f"{_ov_fg_s}/3 confirmed"),
+            ]
+            _why_html = "".join(
+                f'<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px">'
+                f'<span style="color:{"#216c30" if ok else "#9ca3af"};font-size:15px;line-height:1">{"✓" if ok else "✗"}</span>'
+                f'<span style="color:{"#222" if ok else "#9ca3af"};flex:1">{lbl}</span>'
+                f'<span style="font-size:10px;color:#bbb">{det}</span>'
+                f'</div>'
+                for lbl, ok, det in _why_rows
+            )
+            st.markdown(
+                f'<div style="background:#f8f9fb;border-radius:8px;padding:10px 12px;margin-bottom:8px">'
+                f'<div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;'
+                f'letter-spacing:.04em;margin-bottom:5px">Why?</div>'
+                f'{_why_html}</div>', unsafe_allow_html=True)
+
+            # Next trigger box
+            _t1_px = nifty["ema200"] * 0.92
+            _dist_t1 = abs(_ov_pct - (-8.0))
+            st.markdown(
+                f'<div style="background:#fff6dd;border:1px solid #d97706;border-radius:8px;padding:10px 12px">'
+                f'<div style="font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.04em">Next Trigger</div>'
+                f'<div style="font-size:15px;font-weight:700;color:#92400e;margin:3px 0">T1 @ {_t1_px:,.0f}</div>'
+                f'<div style="font-size:12px;color:#a76a00">{_dist_t1:.2f}% away · Deploy {LADDER_TIERS[0]["deploy_pct"]}% tactical</div>'
+                f'</div>', unsafe_allow_html=True)
+
+    with _lc:
+        st.markdown("**Market Cycle Ladder**")
+        if nifty and _ov_pct is not None:
+            _lp = _ov_pct
+            _lb = _ov_bpct
+
+            # Determine active tiers
+            _active_ht = None
+            if _lp > 0:
+                for _ht in HARVEST_TIERS:
+                    if _lp >= _ht["pct"]:
+                        _active_ht = _ht["id"]; break
+            _active_dt = None
+            _next_dt   = None
+            for _t in LADDER_TIERS:
+                if _lp <= _t["threshold"] and _lb is not None and _lb <= _t["breadth_max"]:
+                    if _active_dt is None:
+                        _active_dt = _t["tier"]
+            for _t in LADDER_TIERS:
+                if _lp > _t["threshold"]:
+                    _next_dt = _t["tier"]; break
+
+            _ldr = '<div style="font-size:12px;line-height:1.5">'
+
+            # Harvest tiers
+            _ldr += ('<div style="color:#0d9488;font-size:10px;font-weight:700;text-transform:uppercase;'
+                     'letter-spacing:.05em;padding:2px 6px;margin-bottom:2px">▲ HARVEST</div>')
+            for _ht in HARVEST_TIERS:
+                _is_h = _active_ht == _ht["id"]
+                _h_px = nifty["ema200"] * (1 + _ht["pct"] / 100)
+                _hs = ("background:rgba(13,148,136,.1);border-left:3px solid #0d9488;font-weight:700"
+                       if _is_h else "opacity:.45;border-left:3px solid transparent")
+                _ldr += (f'<div style="display:flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;{_hs}">'
+                         f'<span style="color:#0d9488;min-width:22px;font-weight:700">{_ht["id"]}</span>'
+                         f'<span style="color:#555;min-width:38px">+{_ht["pct"]}%</span>'
+                         f'<span style="color:#9ca3af;font-size:11px;flex:1">{_ht["action"]}</span>'
+                         f'<span style="color:#bbb;font-size:11px">{_h_px:,.0f}</span>'
+                         f'</div>')
+
+            # EMA divider
+            _ldr += (f'<div style="display:flex;align-items:center;gap:6px;margin:6px 0;padding:0 4px">'
+                     f'<div style="flex:1;height:2px;background:#ea580c"></div>'
+                     f'<span style="font-size:11px;font-weight:700;color:#ea580c;white-space:nowrap">'
+                     f'EMA {nifty["ema200"]:,.0f}</span>'
+                     f'<div style="flex:1;height:2px;background:#ea580c"></div></div>')
+
+            # NOW marker when between tiers
+            if _lp < 0 and _active_dt is None:
+                _ldr += (f'<div style="background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.25);'
+                         f'border-radius:4px;padding:4px 8px;margin:3px 0;display:flex;justify-content:space-between">'
+                         f'<span style="color:#dc2626;font-weight:700">● NOW</span>'
+                         f'<span style="color:#dc2626;font-weight:700">{_lp:+.2f}%</span>'
+                         f'<span style="color:#dc2626">{nifty["price"]:,.0f}</span></div>')
+
+            # Deploy tiers
+            _ldr += ('<div style="color:#dc2626;font-size:10px;font-weight:700;text-transform:uppercase;'
+                     'letter-spacing:.05em;padding:2px 6px;margin-top:4px;margin-bottom:2px">▼ DEPLOY</div>')
+            for _t in LADDER_TIERS:
+                _is_at = _active_dt == _t["tier"]
+                _is_nx = _next_dt == _t["tier"] and _active_dt is None
+                _tp = nifty["ema200"] * (1 + _t["threshold"] / 100)
+                if _is_at:
+                    _ts = "background:rgba(220,38,38,.08);border-left:3px solid #dc2626;font-weight:700"
+                    _tc = "#dc2626"
+                    _tag = '<span style="font-size:9px;background:#dc2626;color:#fff;border-radius:3px;padding:1px 4px">ACT</span>'
+                elif _is_nx:
+                    _ts = "background:#fff6dd;border-left:3px solid #d97706"
+                    _tc = "#d97706"
+                    _tag = '<span style="font-size:9px;background:#fef3c7;color:#d97706;border-radius:3px;padding:1px 4px">NEXT</span>'
+                else:
+                    _ts = "opacity:.40;border-left:3px solid transparent"
+                    _tc = "#9ca3af"
+                    _tag = ""
+                _ldr += (f'<div style="display:flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;{_ts}">'
+                         f'<span style="color:{_tc};min-width:22px;font-weight:700">T{_t["tier"]}</span>'
+                         f'<span style="color:#555;min-width:38px">{_t["threshold"]:.0f}%</span>'
+                         f'{_tag}'
+                         f'<span style="margin-left:auto;color:#bbb;font-size:11px">{_tp:,.0f}</span>'
+                         f'</div>')
+            _ldr += '</div>'
+            st.markdown(_ldr, unsafe_allow_html=True)
+        else:
+            st.caption("Nifty data unavailable")
+
+    with _gc:
+        st.markdown("**Fear Gauges**")
+        if fear_gauges:
+            # MOVE gauge
+            _mg = fear_gauges.get("move")
+            if _mg:
+                _mg_s = _mg.get("status", "calm")
+                _mg_c = ("#a92e2e" if _mg_s in ("extreme",) else
+                         "#c05621" if _mg_s in ("elevated", "stress", "moderate") else "#21c45d")
+                _fig_mg = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=_mg["value"],
+                    title={"text": f"MOVE · {_mg_s.upper()}", "font": {"size": 11}},
+                    number={"font": {"size": 18, "color": _mg_c}},
+                    gauge={
+                        "axis": {"range": [50, 160], "tickfont": {"size": 8}},
+                        "bar": {"color": _mg_c, "thickness": 0.22},
+                        "steps": [
+                            {"range": [50, 80],  "color": "#dcfce7"},
+                            {"range": [80, 100], "color": "#fef9c3"},
+                            {"range": [100, 130],"color": "#fee2e2"},
+                            {"range": [130, 160],"color": "#fecaca"},
+                        ],
+                        "threshold": {"line": {"color": "#dc2626", "width": 2}, "thickness": 0.7, "value": 100},
+                    }
+                ))
+                _fig_mg.update_layout(height=135, margin=dict(l=5, r=5, t=28, b=5),
+                                      paper_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(_fig_mg, use_container_width=True)
+
+            # VIX gauge
+            _vg = fear_gauges.get("india_vix")
+            if _vg:
+                _vg_s = _vg.get("status", "normal")
+                _vg_c = ("#a92e2e" if _vg_s in ("panic", "stress") else
+                         "#c05621" if _vg_s in ("fear", "elevated") else "#21c45d")
+                _fig_vg = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=_vg["value"],
+                    title={"text": f"VIX · {_vg_s.upper()}", "font": {"size": 11}},
+                    number={"font": {"size": 18, "color": _vg_c}},
+                    gauge={
+                        "axis": {"range": [10, 50], "tickfont": {"size": 8}},
+                        "bar": {"color": _vg_c, "thickness": 0.22},
+                        "steps": [
+                            {"range": [10, 16], "color": "#dcfce7"},
+                            {"range": [16, 20], "color": "#fef9c3"},
+                            {"range": [20, 30], "color": "#fee2e2"},
+                            {"range": [30, 50], "color": "#fecaca"},
+                        ],
+                        "threshold": {"line": {"color": "#dc2626", "width": 2}, "thickness": 0.7, "value": 20},
+                    }
+                ))
+                _fig_vg.update_layout(height=135, margin=dict(l=5, r=5, t=28, b=5),
+                                      paper_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(_fig_vg, use_container_width=True)
+
+            # Fear Confirmation dots
+            _fc_s   = fear_gauges.get("signals_on", 0)
+            _fc_lbl = fear_gauges.get("confirmation", "NONE")
+            _fc_c   = ({"TRIPLE": "#a92e2e", "DOUBLE": "#c05621",
+                        "SINGLE": "#a76a00", "NONE": "#216c30"}).get(_fc_lbl, "#888")
+            _fc_msg = ({"TRIPLE": "Max conviction — 2× sizing",
+                        "DOUBLE": "Enhanced — 2× sizing + early fire",
+                        "SINGLE": "Standard ladder — 1.5× sizing",
+                        "NONE":   "All calm — standard rules"}).get(_fc_lbl, "—")
+            _dots = " ".join(
+                f'<span style="color:{"#dc2626" if i < _fc_s else "#d1d5db"};font-size:18px">●</span>'
+                for i in range(3)
+            )
+            st.markdown(
+                f'<div style="background:#f8f9fb;border-radius:8px;padding:9px 12px;margin-top:-4px">'
+                f'<div style="font-size:10px;font-weight:700;color:#888;text-transform:uppercase;'
+                f'letter-spacing:.04em;margin-bottom:3px">Fear Confirmation</div>'
+                f'<div style="font-size:14px;font-weight:700;color:{_fc_c}">{_fc_s}/3 · {_fc_lbl}</div>'
+                f'<div style="margin:3px 0">{_dots}</div>'
+                f'<div style="font-size:11px;color:{_fc_c}">{_fc_msg}</div>'
+                f'</div>', unsafe_allow_html=True)
+        else:
+            st.caption("Fear gauge data unavailable")
+
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+
+    # ── ROW 3 — Alerts | Action Queue ─────────────────────────
+    _alc, _aqc = st.columns([1, 1])
+
+    with _alc:
+        st.markdown("**Alerts**")
+        if danger_alerts:
+            _da_html = "".join(
+                f'<div style="padding:5px 12px;font-size:12px">'
+                f'<span class="dot danger-dot"></span>'
+                f'<strong>{a["ticker"]}</strong> — {a["msg"]}'
+                f'<span class="badge badge-red" style="float:right">{a["type"]}</span></div>'
+                for a in danger_alerts
+            )
+            st.markdown(
+                f'<div style="background:rgba(239,68,68,.06);border:1px solid #ef4444;border-radius:10px;'
+                f'padding:8px 4px;margin-bottom:6px">'
+                f'<div style="padding:4px 12px;font-weight:700;color:#dc2626;font-size:13px">'
+                f'🚨 {len(danger_alerts)} Hard Alert(s)</div>'
+                f'{_da_html}</div>', unsafe_allow_html=True)
+        if warning_alerts:
+            _wa_html = "".join(
+                f'<div style="padding:4px 12px;font-size:12px">'
+                f'<span class="dot warning-dot"></span>'
+                f'<strong>{a["ticker"]}</strong> — {a["msg"]}'
+                f'<span class="badge badge-amber" style="float:right">{a["type"]}</span></div>'
+                for a in warning_alerts
+            )
+            st.markdown(
+                f'<div style="background:rgba(245,158,11,.05);border:1px solid #f59e0b;border-radius:10px;'
+                f'padding:6px 4px;margin-bottom:6px">'
+                f'<div style="padding:4px 12px;font-weight:600;color:#d97706;font-size:13px">'
+                f'⚡ {len(warning_alerts)} Watch Item(s)</div>'
+                f'{_wa_html}</div>', unsafe_allow_html=True)
+        if not danger_alerts and not warning_alerts:
+            st.success("✓ No active position alerts")
+
+        # Market alerts expander
+        _ov_al_cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+        _ov_al_market = [
+            r for r in D.get("alert_log", [])
+            if r.get("sent_at", "") >= _ov_al_cutoff
+            and r.get("reason") in {"intraday_move", "volume_spike", "near_52w_high", "near_52w_low"}
+        ]
+        _ov_reason_lbl = {"intraday_move": "Intraday Move", "volume_spike": "Volume Spike",
+                          "near_52w_high": "Near 52w High", "near_52w_low": "Near 52w Low"}
+
+        def _ov_time_ago(iso):
+            try:
+                dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).replace(tzinfo=None)
+                mins = int((datetime.utcnow() - dt).total_seconds() / 60)
+                return f"{mins}m ago" if mins < 60 else f"{mins // 60}h ago"
+            except Exception:
+                return ""
+
+        with st.expander(f"📡 Market Alerts — last 24h ({len(_ov_al_market)} fired)", expanded=bool(_ov_al_market)):
+            if _ov_al_market:
+                for _r in _ov_al_market[:8]:
+                    st.caption(f"**{_r['ticker']}** · {_ov_reason_lbl.get(_r.get('reason',''), _r.get('reason',''))} · "
+                               f"{_r.get('detail','')} · {_ov_time_ago(_r['sent_at'])}")
+            else:
+                st.caption("No intraday / volume / 52w alerts in last 24h")
+
+    with _aqc:
+        st.markdown("**Action Queue**")
+        if alerts:
+            _aq_df = pd.DataFrame([{
+                "Sev": "🔴" if a["level"] == "danger" else "🟠",
+                "Ticker": a["ticker"],
+                "Type": a["type"],
+                "Detail": a["msg"],
+            } for a in sorted(alerts, key=lambda x: 0 if x["level"] == "danger" else 1)])
+            st.dataframe(
+                _aq_df, hide_index=True, use_container_width=True,
+                column_config={
+                    "Sev": st.column_config.TextColumn("", width=30),
+                    "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                    "Type": st.column_config.TextColumn("Type", width="medium"),
+                    "Detail": st.column_config.TextColumn("Detail"),
+                }
+            )
+        else:
+            st.success("✓ No pending actions")
+
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+
+    # ── ROW 4 — Portfolio Snapshot | Nifty Chart | Capital Map ─
+    _sc, _ncc, _kc = st.columns([1, 2, 1])
+
+    with _sc:
+        st.markdown("**Portfolio Snapshot**")
+        _ov_largest = max(positions, key=lambda p: p["weight"]) if positions else None
+        _k1, _k2 = st.columns(2)
+        _k1.metric("Value", fmt(total_value))
+        _k2.metric("Invested", fmt(total_invested))
+        _k3, _k4 = st.columns(2)
+        _k3.metric("Net P&L", fmt(net_pnl),
+                   delta=f"{net_pnl / total_invested * 100:+.1f}%" if total_invested else None)
+        _k4.metric("Positions", len(positions), delta=f"{len(set(p['sector'] for p in positions))} sectors")
+        _k5, _k6 = st.columns(2)
+        _k5.metric("Largest Wt", f"{_ov_largest['weight']:.0f}%" if _ov_largest else "—",
+                   delta=_ov_largest["ticker"] if _ov_largest else None)
+        _k6.metric("Closed Trades", len(D["closed"]),
+                   delta=f"{wins}W / {len(D['closed']) - wins}L" if D["closed"] else None)
+
+    with _ncc:
+        st.markdown("**Nifty 50 vs 200 EMA** <span style='font-size:11px;color:#888'>120-day cycle view</span>",
+                    unsafe_allow_html=True)
+        if nifty and nifty.get("chart") is not None:
+            _cdf2 = nifty["chart"]
+            _ev   = nifty["ema200"]
+            _fig_ov = go.Figure()
+            _fig_ov.add_hrect(y0=_ev*1.05, y1=_ev*1.20, fillcolor="rgba(13,148,136,.05)", line_width=0,
+                              annotation_text="HARVEST ZONE", annotation_position="top left",
+                              annotation_font_size=9, annotation_font_color="#0d9488")
+            _fig_ov.add_hrect(y0=_ev*0.85, y1=_ev*0.92, fillcolor="rgba(220,38,38,.04)", line_width=0,
+                              annotation_text="DEPLOY ZONE", annotation_position="bottom left",
+                              annotation_font_size=9, annotation_font_color="#dc2626")
+            _fig_ov.add_trace(go.Scatter(x=_cdf2["Date"], y=_cdf2["Close"], mode='lines',
+                                          name='Nifty 50', line=dict(color="#355ec9", width=2),
+                                          hovertemplate='%{x}<br>Nifty: %{y:,.0f}<extra></extra>'))
+            _fig_ov.add_trace(go.Scatter(x=_cdf2["Date"], y=_cdf2["EMA200"], mode='lines',
+                                          name='200 EMA', line=dict(color="#eb6834", width=2, dash='dash'),
+                                          hovertemplate='%{x}<br>EMA: %{y:,.0f}<extra></extra>'))
+            for _t in LADDER_TIERS[:3]:
+                _t_px = _ev * (1 + _t["threshold"] / 100)
+                _fig_ov.add_hline(y=_t_px, line_dash="dot", line_color="#c83b3b", line_width=1, opacity=0.4,
+                                   annotation_text=f"T{_t['tier']}", annotation_position="right",
+                                   annotation_font_size=8, annotation_font_color="#c83b3b")
+            _fig_ov.update_layout(
+                height=300, margin=dict(l=0, r=50, t=10, b=10),
+                xaxis=dict(showgrid=False, title=None),
+                yaxis=dict(showgrid=True, gridcolor="#eef0f3", title=None),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(_fig_ov, use_container_width=True)
+        else:
+            st.info("Nifty chart unavailable")
+
+    with _kc:
+        st.markdown("**Capital Deployment Map**")
+        if nifty and _ov_pct is not None:
+            _dep_flags = [
+                _ov_pct <= _t["threshold"] and _ov_bpct is not None and _ov_bpct <= _t["breadth_max"]
+                for _t in LADDER_TIERS
+            ]
+            st.markdown(
+                '<div style="font-size:11px;color:#888;margin-bottom:6px">'
+                'Tactical Reserve · 40% of total capital · 5 tiers × 8%</div>',
+                unsafe_allow_html=True)
+            _cap_html = ""
+            for _i, _t in enumerate(LADDER_TIERS):
+                _dep = _dep_flags[_i]
+                _bar_c = "#dc2626" if _dep else "#d1d5db"
+                _bg_c  = "#fee2e2" if _dep else "#f3f4f6"
+                _lbl   = "DEPLOYED" if _dep else f"{_t['threshold']:.0f}% EMA"
+                _cap_html += (
+                    f'<div style="margin:5px 0">'
+                    f'<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px">'
+                    f'<span style="font-weight:700;color:{_bar_c}">T{_t["tier"]}</span>'
+                    f'<span style="color:{_bar_c}">{_lbl}</span>'
+                    f'<span style="color:#9ca3af">{_t["deploy_pct"]}%</span>'
+                    f'</div>'
+                    f'<div style="height:8px;background:{_bg_c};border-radius:4px;overflow:hidden">'
+                    f'<div style="height:100%;width:{"100%" if _dep else "0%"};background:{_bar_c};border-radius:4px"></div>'
+                    f'</div></div>'
+                )
+            _tot_dep = sum(_t["deploy_pct"] for _t, _d in zip(LADDER_TIERS, _dep_flags) if _d)
+            _cap_html += (
+                f'<div style="margin-top:8px;padding:8px;background:#f8f9fb;border-radius:6px">'
+                f'<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">'
+                f'<span style="font-weight:700">Deployed</span>'
+                f'<span style="font-weight:700;color:#dc2626">{_tot_dep}%</span></div>'
+                f'<div style="display:flex;justify-content:space-between;font-size:12px">'
+                f'<span>Remaining</span>'
+                f'<span style="color:#216c30">{40 - _tot_dep}%</span></div></div>'
+            )
+            st.markdown(_cap_html, unsafe_allow_html=True)
+        else:
+            st.caption("Capital map unavailable")
+
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+
+    # ── ROW 5 — Portfolio Allocation | Sleeve Performance ──────
+    _ac, _slc = st.columns([1, 1])
+
+    with _ac:
+        st.markdown("**Portfolio Allocation**")
+        if positions:
+            _alloc_view = st.radio(
+                "View by", ["Sector", "Position", "Sleeve"],
+                horizontal=True, key="ov_alloc_view", label_visibility="collapsed"
+            )
+            if _alloc_view == "Sector":
+                _alloc = {}
+                for _p in positions:
+                    _alloc[_p["sector"]] = _alloc.get(_p["sector"], 0) + _p["current_value"]
+            elif _alloc_view == "Position":
+                _alloc = {_p["ticker"]: _p["current_value"] for _p in positions}
+            else:
+                _alloc = {}
+                for _p in positions:
+                    _alloc[_p["sleeve"]] = _alloc.get(_p["sleeve"], 0) + _p["current_value"]
+
+            _an = list(_alloc.keys())
+            _av = [round(v, 0) for v in _alloc.values()]
+            _fig_donut = go.Figure(go.Pie(
+                labels=_an, values=_av, hole=0.55,
+                marker_colors=SECTOR_COLORS[:len(_an)],
+                textinfo="label+percent", textfont_size=11,
+                hovertemplate="%{label}<br>₹%{value:,.0f} · %{percent}<extra></extra>",
+            ))
+            _fig_donut.update_layout(
+                height=260, margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)", showlegend=False,
+                annotations=[dict(text=fmt(total_value), x=0.5, y=0.5,
+                                  font_size=14, font_color="#111827", showarrow=False)]
+            )
+            st.plotly_chart(_fig_donut, use_container_width=True)
+        else:
+            st.caption("No active positions")
+
+    with _slc:
+        st.markdown("**Sleeve Performance**")
+        _sleeves = {}
+        for _p in positions:
+            _slv = _p["sleeve"]
+            if _slv not in _sleeves:
+                _sleeves[_slv] = {"positions": [], "invested": 0.0, "value": 0.0}
+            _sleeves[_slv]["positions"].append(_p)
+            _sleeves[_slv]["invested"] += _p["cost_basis"]
+            _sleeves[_slv]["value"]    += _p["current_value"]
+
+        if _sleeves:
+            for _slv_name, _slv_d in sorted(_sleeves.items()):
+                _slv_pnl = ((_slv_d["value"] - _slv_d["invested"]) / _slv_d["invested"] * 100
+                            if _slv_d["invested"] else 0)
+                _slv_col = SLEEVE_COLORS.get(_slv_name, "#667085")
+                _slv_sign = "+" if _slv_pnl >= 0 else ""
+                with st.expander(
+                    f"{_slv_name}  ·  {fmt(_slv_d['value'])}  ·  {_slv_sign}{_slv_pnl:.2f}%",
+                    expanded=False
+                ):
+                    for _sp in _slv_d["positions"]:
+                        _sp_c = GREEN if _sp["pnl"] >= 0 else RED
+                        st.markdown(
+                            f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                            f'padding:4px 0;border-bottom:1px solid #f3f4f6;font-size:12px">'
+                            f'<span style="font-weight:600;min-width:90px">{_sp["ticker"]}</span>'
+                            f'<span>₹{_sp["cmp"]:,.0f}</span>'
+                            f'<span style="color:{_sp_c}">{_sp["pnl_pct"]:+.2f}%</span>'
+                            f'<span style="color:#9ca3af">{_sp["weight"]:.0f}% wt</span>'
+                            f'</div>', unsafe_allow_html=True)
+        else:
+            st.caption("No active positions")
 
 # ═══════════════════════════════════════════════════════════
 # TAB 1 — COCKPIT
