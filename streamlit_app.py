@@ -61,6 +61,7 @@ def load():
         "research_notes": sb.table("research_notes").select("*").execute().data or [],
         "thesis_killers": sb.table("thesis_killers").select("*").eq("is_active", True).execute().data or [],
         "monitoring_checklist": sb.table("monitoring_checklist").select("*").eq("is_active", True).execute().data or [],
+        "alert_log": sb.table("alert_log").select("ticker,level,reason,detail,sent_at").order("sent_at", desc=True).limit(50).execute().data or [],
     }
 
 D = load()
@@ -1294,6 +1295,44 @@ with tab_cockpit:
             f'<div style="background:rgba(245,158,11,.05);border:1px solid #f59e0b;border-radius:10px;padding:6px 4px;margin-bottom:12px">'
             f'<div style="padding:4px 12px;font-weight:600;color:#d97706;font-size:13px">⚡ {len(warning_alerts)} Watch Item(s)</div>'
             f'{html}</div>', unsafe_allow_html=True)
+
+    # ── Market Alerts from alert_log (last 24 h) ────────────
+    _al_cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+    _al_rows = [r for r in D.get("alert_log", [])
+                if r.get("sent_at", "") >= _al_cutoff]
+    if _al_rows:
+        _al_danger  = [r for r in _al_rows if r["level"] == "DANGER"]
+        _al_warning = [r for r in _al_rows if r["level"] == "WARNING"]
+        _al_info    = [r for r in _al_rows if r["level"] == "INFO"]
+
+        def _al_time_ago(iso):
+            try:
+                dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).replace(tzinfo=None)
+                mins = int((datetime.utcnow() - dt).total_seconds() / 60)
+                return f"{mins}m ago" if mins < 60 else f"{mins // 60}h ago"
+            except Exception:
+                return ""
+
+        def _al_render_group(rows, border, bg, label_color, icon):
+            if not rows:
+                return
+            lines = "".join(
+                f'<div style="padding:4px 12px;font-size:12px;display:flex;justify-content:space-between">'
+                f'<span><strong>{r["ticker"]}</strong> — {r.get("detail","")}</span>'
+                f'<span style="color:#888;font-size:11px">{r["reason"].replace("_"," ")} · {_al_time_ago(r["sent_at"])}</span>'
+                f'</div>'
+                for r in rows
+            )
+            st.markdown(
+                f'<div style="background:{bg};border:1px solid {border};border-radius:10px;'
+                f'padding:6px 4px;margin-bottom:8px">'
+                f'<div style="padding:4px 12px;font-weight:600;color:{label_color};font-size:13px">'
+                f'{icon} {len(rows)} {rows[0]["level"].capitalize()} Alert{"s" if len(rows)>1 else ""} (24h)</div>'
+                f'{lines}</div>', unsafe_allow_html=True)
+
+        _al_render_group(_al_danger,  "#ef4444", "rgba(239,68,68,.05)",   "#dc2626", "📡")
+        _al_render_group(_al_warning, "#f59e0b", "rgba(245,158,11,.05)",  "#d97706", "📡")
+        _al_render_group(_al_info,    "#3b82f6", "rgba(59,130,246,.05)",  "#2563eb", "📡")
 
     # ════════════════════════════════════════════════════════
     # ① MARKET REGIME — "What's the environment?"
