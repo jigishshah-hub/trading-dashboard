@@ -1115,6 +1115,52 @@ st.markdown("""
     .ov-conc-pct  {font-weight:400; color:#6b7280;}
     .ov-conc-trk  {height:10px; background:#f3f4f6; border-radius:5px; overflow:hidden;}
     .ov-conc-fill {height:100%; border-radius:5px; transition:width .3s;}
+
+    /* ── V3 market state grid ─────────────────────────── */
+    .ov-mkt-grid {display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin:10px 0 14px}
+    .ov-mkt-card {background:#fff; border:1px solid #e5e7eb; border-radius:10px;
+                  padding:14px 14px 12px; box-shadow:0 1px 4px rgba(0,0,0,.06); min-width:0}
+    .ov-mkt-lbl  {font-size:9.5px; font-weight:700; text-transform:uppercase;
+                  letter-spacing:.07em; color:#9ca3af; margin-bottom:6px}
+    .ov-mkt-val  {font-size:22px; font-weight:800; color:#111827; line-height:1.1;
+                  font-variant-numeric:tabular-nums; margin-bottom:2px}
+    .ov-mkt-dlt  {font-size:12px; margin:0 0 3px; font-weight:600}
+    .ov-mkt-sub  {font-size:10.5px; color:#9ca3af; margin-bottom:6px; line-height:1.4}
+    .ov-mkt-badge{display:inline-block; padding:2px 9px; border-radius:99px;
+                  font-size:10px; font-weight:700; letter-spacing:.03em}
+    .ov-mkt-ext  {font-size:10px; color:#9ca3af; margin-top:4px; line-height:1.35}
+
+    /* ── V3 fear gauge compact rows ───────────────────── */
+    .ov-fg-panel {background:#fff; border:1px solid #e5e7eb; border-radius:10px;
+                  box-shadow:0 1px 4px rgba(0,0,0,.06); overflow:hidden; margin-top:4px}
+    .ov-fg-row   {display:grid; grid-template-columns:52px 56px 1fr 72px;
+                  align-items:center; padding:10px 14px; border-bottom:1px solid #f3f4f6}
+    .ov-fg-row:last-of-type {border-bottom:none}
+    .ov-fg-name  {font-size:9.5px; font-weight:700; text-transform:uppercase;
+                  letter-spacing:.06em; color:#6b7280}
+    .ov-fg-val   {font-size:18px; font-weight:800; color:#111827;
+                  font-variant-numeric:tabular-nums}
+    .ov-fg-bar   {height:5px; background:#f3f4f6; border-radius:3px; overflow:hidden; margin:0 8px}
+    .ov-fg-fill  {height:100%; border-radius:3px}
+    .ov-fg-badge {display:inline-block; padding:2px 8px; border-radius:99px;
+                  font-size:9.5px; font-weight:700; text-align:center}
+    .ov-fg-conf  {background:#f8f9fb; padding:10px 14px; border-top:1px solid #e5e7eb}
+
+    /* ── V3 action queue table ────────────────────────── */
+    .ov-aq-wrap {background:#fff; border:1px solid #e5e7eb; border-radius:10px;
+                 box-shadow:0 1px 4px rgba(0,0,0,.06); overflow:hidden}
+    .ov-aq-hdr  {display:grid; grid-template-columns:28px 72px 100px 1fr 64px;
+                 padding:7px 14px; background:#f8f9fb; font-size:9.5px; font-weight:700;
+                 text-transform:uppercase; letter-spacing:.06em; color:#9ca3af;
+                 border-bottom:1px solid #e5e7eb}
+    .ov-aq-row  {display:grid; grid-template-columns:28px 72px 100px 1fr 64px;
+                 align-items:center; padding:9px 14px; border-bottom:1px solid #f3f4f6;
+                 font-size:12px}
+    .ov-aq-row:last-child {border-bottom:none}
+    .ov-aq-empty{padding:16px 14px; font-size:13px; color:#216c30; font-weight:600;
+                 display:flex; align-items:center; gap:8px}
+    .ov-aq-act  {display:inline-block; padding:2px 8px; border-radius:5px;
+                 font-size:9.5px; font-weight:700; letter-spacing:.03em; text-align:center}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1404,47 +1450,107 @@ with tab_overview:
         unsafe_allow_html=True)
 
     # ── ROW 1 — Market State Cards ────────────────────────────
-    _m1, _m2, _m3, _m4, _m5 = st.columns(5)
-
-    if nifty and _ov_pct is not None:
-        _m1.metric("Nifty 50", f"{nifty['price']:,.0f}",
-                   delta=f"{nifty['daily_chg']:+.2f}%", delta_color="normal")
-        _m1.caption(f"{_ov_pct:+.2f}% vs EMA · T1 @ {nifty['ema200']*0.92:,.0f}")
-    else:
-        _m1.metric("Nifty 50", "—")
-
-    _vix_g = fear_gauges.get("india_vix") if fear_gauges else None
-    if _vix_g:
-        _m2.metric("India VIX", f"{_vix_g['value']}", delta=f"{_vix_g['chg']:+.1f}%", delta_color="inverse")
-        _m2.caption(f"Status: {_vix_g['status'].upper()}")
-    else:
-        _m2.metric("India VIX", "—")
-
-    _move_g = fear_gauges.get("move") if fear_gauges else None
-    if _move_g:
-        _m3.metric("MOVE Index", f"{_move_g['value']}", delta=f"{_move_g['chg']:+.1f}%", delta_color="inverse")
-        _m3.caption(f"Status: {_move_g['status'].upper()}")
-    else:
-        _m3.metric("MOVE Index", "—")
-
+    _vix_g    = fear_gauges.get("india_vix")    if fear_gauges else None
+    _move_g   = fear_gauges.get("move")         if fear_gauges else None
     _credit_g = fear_gauges.get("credit_stress") if fear_gauges else None
-    if _credit_g:
-        _m4.metric("Credit Stress", f"{_ov_ordinal(_credit_g['pctile'])} %ile",
-                   delta=f"{_credit_g['chg']:+.2f}%", delta_color="inverse")
-        _m4.caption(f"Status: {_credit_g['status'].upper()}")
+
+    def _ov_card(label, value, delta_str, delta_pos, sub, status, sc, sbg, top_c, ext=""):
+        arr  = "↑" if delta_pos else "↓"
+        dc   = "#216c30" if delta_pos else "#c83b3b"
+        _ext = f'<div class="ov-mkt-ext">{ext}</div>' if ext else ""
+        return (f'<div class="ov-mkt-card" style="border-top:3px solid {top_c}">'
+                f'<div class="ov-mkt-lbl">{label}</div>'
+                f'<div class="ov-mkt-val">{value}</div>'
+                f'<div class="ov-mkt-dlt" style="color:{dc}">{arr} {delta_str}</div>'
+                f'<div class="ov-mkt-sub">{sub}</div>'
+                f'<span class="ov-mkt-badge" style="background:{sbg};color:{sc}">{status}</span>'
+                f'{_ext}</div>')
+
+    _cards = '<div class="ov-mkt-grid">'
+
+    # Card 1 — Nifty 50
+    if nifty and _ov_pct is not None:
+        _n_dpos = nifty.get("daily_chg", 0) >= 0
+        _n_tc   = "#c83b3b" if _ov_pct < 0 else "#216c30"
+        _n_sc   = "#c83b3b" if _ov_pct < 0 else "#216c30"
+        _n_sbg  = "#feecec" if _ov_pct < 0 else "#eaf7ed"
+        _n_st   = "BELOW EMA" if _ov_pct < 0 else "ABOVE EMA"
+        _n_t1   = nifty["ema200"] * 0.92
+        _n_ext  = f"T1 trigger @ {_n_t1:,.0f}"
+        _cards += _ov_card("Nifty 50", f"{nifty['price']:,.0f}",
+                           f"{nifty.get('daily_chg',0):+.2f}%", _n_dpos,
+                           f"{_ov_pct:+.2f}% vs 200 EMA",
+                           _n_st, _n_sc, _n_sbg, _n_tc, _n_ext)
     else:
-        _m4.metric("Credit Stress", "—")
+        _cards += ('<div class="ov-mkt-card" style="border-top:3px solid #d1d5db">'
+                   '<div class="ov-mkt-lbl">Nifty 50</div>'
+                   '<div class="ov-mkt-val" style="color:#9ca3af">—</div></div>')
 
-    _m5.markdown(
-        f'<div style="background:{_ov_bg};border:1px solid {_ov_color}40;border-radius:10px;'
-        f'padding:12px 14px;margin-top:0">'
-        f'<div style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;'
-        f'letter-spacing:.04em">Market Regime</div>'
-        f'<div style="font-size:18px;font-weight:800;color:{_ov_color};margin:4px 0">{_ov_icon} {_ov_state}</div>'
-        f'<div style="font-size:11px;color:{_ov_color}">{_ov_fg_s}/3 fear signals</div>'
-        f'</div>', unsafe_allow_html=True)
+    # Card 2 — India VIX
+    if _vix_g:
+        _vx_dpos = _vix_g.get("chg", 0) <= 0   # lower VIX = good
+        _vx_s    = _vix_g.get("status", "normal")
+        _vx_sc   = ("#a92e2e" if _vx_s in ("panic","stress")
+                    else "#c05621" if _vx_s in ("fear","elevated") else "#216c30")
+        _vx_sbg  = ("#feecec" if _vx_s in ("panic","stress")
+                    else "#fff0e6" if _vx_s in ("fear","elevated") else "#eaf7ed")
+        _vx_tc   = _vx_sc
+        _cards += _ov_card("India VIX", f"{_vix_g['value']:.1f}",
+                           f"{_vix_g.get('chg',0):+.1f}%", _vx_dpos,
+                           f"Range 13–16 calm / 20+ fear",
+                           _vx_s.upper(), _vx_sc, _vx_sbg, _vx_tc)
+    else:
+        _cards += ('<div class="ov-mkt-card" style="border-top:3px solid #d1d5db">'
+                   '<div class="ov-mkt-lbl">India VIX</div>'
+                   '<div class="ov-mkt-val" style="color:#9ca3af">—</div></div>')
 
-    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+    # Card 3 — MOVE Index
+    if _move_g:
+        _mv_dpos = _move_g.get("chg", 0) <= 0
+        _mv_s    = _move_g.get("status", "calm")
+        _mv_sc   = ("#a92e2e" if _mv_s in ("extreme",)
+                    else "#c05621" if _mv_s in ("elevated","stress","moderate") else "#216c30")
+        _mv_sbg  = ("#feecec" if _mv_s in ("extreme",)
+                    else "#fff0e6" if _mv_s in ("elevated","stress","moderate") else "#eaf7ed")
+        _cards += _ov_card("MOVE Index", f"{_move_g['value']:.0f}",
+                           f"{_move_g.get('chg',0):+.1f}%", _mv_dpos,
+                           "US bond volatility · >100 = stress",
+                           _mv_s.upper(), _mv_sc, _mv_sbg, _mv_sc)
+    else:
+        _cards += ('<div class="ov-mkt-card" style="border-top:3px solid #d1d5db">'
+                   '<div class="ov-mkt-lbl">MOVE Index</div>'
+                   '<div class="ov-mkt-val" style="color:#9ca3af">—</div></div>')
+
+    # Card 4 — Credit Stress
+    if _credit_g:
+        _cr_dpos = _credit_g.get("chg", 0) <= 0
+        _cr_s    = _credit_g.get("status", "normal")
+        _cr_sc   = ("#a92e2e" if _cr_s in ("extreme","stress")
+                    else "#c05621" if _cr_s in ("elevated","moderate") else "#216c30")
+        _cr_sbg  = ("#feecec" if _cr_s in ("extreme","stress")
+                    else "#fff0e6" if _cr_s in ("elevated","moderate") else "#eaf7ed")
+        _cr_val  = f"{_ov_ordinal(_credit_g['pctile'])} %ile"
+        _cards += _ov_card("Credit Stress", _cr_val,
+                           f"{_credit_g.get('chg',0):+.2f}%", _cr_dpos,
+                           "HY spread indicator · <3.5 = normal",
+                           _cr_s.upper(), _cr_sc, _cr_sbg, _cr_sc)
+    else:
+        _cards += ('<div class="ov-mkt-card" style="border-top:3px solid #d1d5db">'
+                   '<div class="ov-mkt-lbl">Credit Stress</div>'
+                   '<div class="ov-mkt-val" style="color:#9ca3af">—</div></div>')
+
+    # Card 5 — Market Regime
+    _cards += (f'<div class="ov-mkt-card" style="border-top:3px solid {_ov_color};'
+               f'background:{_ov_bg}20">'
+               f'<div class="ov-mkt-lbl">Market Regime</div>'
+               f'<div style="font-size:20px;font-weight:800;color:{_ov_color};margin:2px 0 5px">'
+               f'{_ov_icon} {_ov_state}</div>'
+               f'<div style="font-size:11px;color:{_ov_color};margin-bottom:7px">{_ov_perm[:32]}</div>'
+               f'<span class="ov-mkt-badge" style="background:{_ov_bg};color:{_ov_color}">'
+               f'{_ov_fg_s}/3 fear signals</span></div>')
+
+    _cards += '</div>'
+    st.markdown(_cards, unsafe_allow_html=True)
 
     # ── ROW 2 — Decision Card | Cycle Ladder | Fear Gauges ────
     _dc, _lc, _gc = st.columns([1.2, 1.5, 1.3])
@@ -1583,61 +1689,6 @@ with tab_overview:
     with _gc:
         st.markdown("**Fear Gauges**")
         if fear_gauges:
-            # MOVE gauge
-            _mg = fear_gauges.get("move")
-            if _mg:
-                _mg_s = _mg.get("status", "calm")
-                _mg_c = ("#a92e2e" if _mg_s in ("extreme",) else
-                         "#c05621" if _mg_s in ("elevated", "stress", "moderate") else "#21c45d")
-                _fig_mg = go.Figure(go.Indicator(
-                    mode="gauge+number",
-                    value=_mg["value"],
-                    title={"text": f"MOVE · {_mg_s.upper()}", "font": {"size": 11}},
-                    number={"font": {"size": 18, "color": _mg_c}},
-                    gauge={
-                        "axis": {"range": [50, 160], "tickfont": {"size": 8}},
-                        "bar": {"color": _mg_c, "thickness": 0.22},
-                        "steps": [
-                            {"range": [50, 80],  "color": "#dcfce7"},
-                            {"range": [80, 100], "color": "#fef9c3"},
-                            {"range": [100, 130],"color": "#fee2e2"},
-                            {"range": [130, 160],"color": "#fecaca"},
-                        ],
-                        "threshold": {"line": {"color": "#dc2626", "width": 2}, "thickness": 0.7, "value": 100},
-                    }
-                ))
-                _fig_mg.update_layout(height=135, margin=dict(l=5, r=5, t=28, b=5),
-                                      paper_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(_fig_mg, use_container_width=True)
-
-            # VIX gauge
-            _vg = fear_gauges.get("india_vix")
-            if _vg:
-                _vg_s = _vg.get("status", "normal")
-                _vg_c = ("#a92e2e" if _vg_s in ("panic", "stress") else
-                         "#c05621" if _vg_s in ("fear", "elevated") else "#21c45d")
-                _fig_vg = go.Figure(go.Indicator(
-                    mode="gauge+number",
-                    value=_vg["value"],
-                    title={"text": f"VIX · {_vg_s.upper()}", "font": {"size": 11}},
-                    number={"font": {"size": 18, "color": _vg_c}},
-                    gauge={
-                        "axis": {"range": [10, 50], "tickfont": {"size": 8}},
-                        "bar": {"color": _vg_c, "thickness": 0.22},
-                        "steps": [
-                            {"range": [10, 16], "color": "#dcfce7"},
-                            {"range": [16, 20], "color": "#fef9c3"},
-                            {"range": [20, 30], "color": "#fee2e2"},
-                            {"range": [30, 50], "color": "#fecaca"},
-                        ],
-                        "threshold": {"line": {"color": "#dc2626", "width": 2}, "thickness": 0.7, "value": 20},
-                    }
-                ))
-                _fig_vg.update_layout(height=135, margin=dict(l=5, r=5, t=28, b=5),
-                                      paper_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(_fig_vg, use_container_width=True)
-
-            # Fear Confirmation dots
             _fc_s   = fear_gauges.get("signals_on", 0)
             _fc_lbl = fear_gauges.get("confirmation", "NONE")
             _fc_c   = ({"TRIPLE": "#a92e2e", "DOUBLE": "#c05621",
@@ -1646,18 +1697,73 @@ with tab_overview:
                         "DOUBLE": "Enhanced — 2× sizing + early fire",
                         "SINGLE": "Standard ladder — 1.5× sizing",
                         "NONE":   "All calm — standard rules"}).get(_fc_lbl, "—")
-            _dots = " ".join(
-                f'<span style="color:{"#dc2626" if i < _fc_s else "#d1d5db"};font-size:18px">●</span>'
-                for i in range(3)
+
+            def _fg_row(name, val_str, pct_fill, bar_fill_c, status, sc, sbg, note):
+                _pct = max(0, min(pct_fill, 100))
+                return (f'<div class="ov-fg-row">'
+                        f'<div class="ov-fg-name">{name}</div>'
+                        f'<div class="ov-fg-val" style="color:{sc}">{val_str}</div>'
+                        f'<div class="ov-fg-bar">'
+                        f'<div class="ov-fg-fill" style="width:{_pct:.0f}%;background:{bar_fill_c}"></div></div>'
+                        f'<span class="ov-fg-badge" style="background:{sbg};color:{sc}">{status}</span>'
+                        f'</div>')
+
+            _fg_html = '<div class="ov-fg-panel">'
+
+            # MOVE row
+            if _move_g:
+                _mv_s  = _move_g.get("status", "calm")
+                _mv_sc = ("#a92e2e" if _mv_s in ("extreme",) else
+                          "#c05621" if _mv_s in ("elevated","stress","moderate") else "#21c45d")
+                _mv_sbg= ("#feecec" if _mv_s in ("extreme",) else
+                          "#fff0e6" if _mv_s in ("elevated","stress","moderate") else "#eaf7ed")
+                _mv_pct= min((_move_g["value"] - 50) / 110 * 100, 100)
+                _mv_bc = ("#a92e2e" if _mv_pct > 65 else "#c05621" if _mv_pct > 40 else "#21c45d")
+                _fg_html += _fg_row("MOVE", f"{_move_g['value']:.0f}", _mv_pct,
+                                    _mv_bc, _mv_s.upper(), _mv_sc, _mv_sbg, "")
+
+            # VIX row
+            if _vix_g:
+                _vx_s  = _vix_g.get("status", "normal")
+                _vx_sc = ("#a92e2e" if _vx_s in ("panic","stress") else
+                          "#c05621" if _vx_s in ("fear","elevated") else "#21c45d")
+                _vx_sbg= ("#feecec" if _vx_s in ("panic","stress") else
+                          "#fff0e6" if _vx_s in ("fear","elevated") else "#eaf7ed")
+                _vx_pct= min((_vix_g["value"] - 10) / 40 * 100, 100)
+                _vx_bc = ("#a92e2e" if _vx_pct > 65 else "#c05621" if _vx_pct > 40 else "#21c45d")
+                _fg_html += _fg_row("VIX", f"{_vix_g['value']:.1f}", _vx_pct,
+                                    _vx_bc, _vx_s.upper(), _vx_sc, _vx_sbg, "")
+
+            # Credit Stress row
+            if _credit_g:
+                _cr_s  = _credit_g.get("status", "normal")
+                _cr_sc = ("#a92e2e" if _cr_s in ("extreme","stress") else
+                          "#c05621" if _cr_s in ("elevated","moderate") else "#21c45d")
+                _cr_sbg= ("#feecec" if _cr_s in ("extreme","stress") else
+                          "#fff0e6" if _cr_s in ("elevated","moderate") else "#eaf7ed")
+                _cr_pct= min(_credit_g.get("pctile", 0) / 100 * 100, 100)
+                _cr_bc = ("#a92e2e" if _cr_pct > 65 else "#c05621" if _cr_pct > 40 else "#21c45d")
+                _fg_html += _fg_row("CREDIT", f"{_credit_g.get('value', _credit_g.get('pctile','—')):.2f}"
+                                    if isinstance(_credit_g.get('value'), (int,float)) else
+                                    f"{_ov_ordinal(_credit_g['pctile'])} %ile",
+                                    _cr_pct, _cr_bc, _cr_s.upper(), _cr_sc, _cr_sbg, "")
+
+            # Confirmation footer
+            _dots = "".join(
+                f'<span style="color:{"#dc2626" if i < _fc_s else "#d1d5db"};font-size:16px;'
+                f'line-height:1">●</span>' for i in range(3)
             )
-            st.markdown(
-                f'<div style="background:#f8f9fb;border-radius:8px;padding:9px 12px;margin-top:-4px">'
-                f'<div style="font-size:10px;font-weight:700;color:#888;text-transform:uppercase;'
-                f'letter-spacing:.04em;margin-bottom:3px">Fear Confirmation</div>'
-                f'<div style="font-size:14px;font-weight:700;color:{_fc_c}">{_fc_s}/3 · {_fc_lbl}</div>'
-                f'<div style="margin:3px 0">{_dots}</div>'
-                f'<div style="font-size:11px;color:{_fc_c}">{_fc_msg}</div>'
-                f'</div>', unsafe_allow_html=True)
+            _fg_html += (
+                f'<div class="ov-fg-conf">'
+                f'<div style="font-size:9.5px;font-weight:700;text-transform:uppercase;'
+                f'letter-spacing:.06em;color:#9ca3af;margin-bottom:4px">Fear Confirmation</div>'
+                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">'
+                f'<span style="font-size:14px;font-weight:800;color:{_fc_c}">{_fc_s}/3 · {_fc_lbl}</span>'
+                f'<span>{_dots}</span></div>'
+                f'<div style="font-size:11px;color:{_fc_c}">{_fc_msg}</div></div>')
+
+            _fg_html += '</div>'
+            st.markdown(_fg_html, unsafe_allow_html=True)
         else:
             st.caption("Fear gauge data unavailable")
 
@@ -1727,24 +1833,37 @@ with tab_overview:
 
     with _aqc:
         st.markdown("**Action Queue**")
-        if alerts:
-            _aq_df = pd.DataFrame([{
-                "Sev": "🔴" if a["level"] == "danger" else "🟠",
-                "Ticker": a["ticker"],
-                "Type": a["type"],
-                "Detail": a["msg"],
-            } for a in sorted(alerts, key=lambda x: 0 if x["level"] == "danger" else 1)])
-            st.dataframe(
-                _aq_df, hide_index=True, use_container_width=True,
-                column_config={
-                    "Sev": st.column_config.TextColumn("", width=30),
-                    "Ticker": st.column_config.TextColumn("Ticker", width="small"),
-                    "Type": st.column_config.TextColumn("Type", width="medium"),
-                    "Detail": st.column_config.TextColumn("Detail"),
-                }
+        _aq_sorted = sorted(alerts, key=lambda x: 0 if x["level"] == "danger" else 1)
+        if _aq_sorted:
+            _aq_html = (
+                '<div class="ov-aq-wrap">'
+                '<div class="ov-aq-hdr">'
+                '<span></span><span>Ticker</span><span>Type</span>'
+                '<span>Detail</span><span>Action</span></div>'
             )
+            for _a in _aq_sorted:
+                _is_d  = _a["level"] == "danger"
+                _dot   = "🔴" if _is_d else "🟠"
+                _row_bg = "background:rgba(220,38,38,.03);" if _is_d else "background:rgba(245,158,11,.02);"
+                _act_c = "#a92e2e" if _is_d else "#c05621"
+                _act_bg= "#feecec" if _is_d else "#fff6dd"
+                _act_lbl = "REVIEW" if _is_d else "WATCH"
+                _aq_html += (
+                    f'<div class="ov-aq-row" style="{_row_bg}">'
+                    f'<span style="font-size:13px">{_dot}</span>'
+                    f'<span style="font-weight:700;color:#111827">{_a["ticker"]}</span>'
+                    f'<span style="color:#6b7280">{_a["type"]}</span>'
+                    f'<span style="color:#374151;font-size:11.5px">{_a["msg"]}</span>'
+                    f'<span class="ov-aq-act" style="background:{_act_bg};color:{_act_c}">{_act_lbl}</span>'
+                    f'</div>'
+                )
+            _aq_html += '</div>'
+            st.markdown(_aq_html, unsafe_allow_html=True)
         else:
-            st.success("✓ No pending actions")
+            st.markdown(
+                '<div class="ov-aq-wrap">'
+                '<div class="ov-aq-empty">✓ All clear — no pending actions</div>'
+                '</div>', unsafe_allow_html=True)
 
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
 
