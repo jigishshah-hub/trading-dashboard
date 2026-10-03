@@ -2258,13 +2258,11 @@ with tab_positions:
         st.divider()
         if _ps_risk_per > 0 and _ps_entry > 0 and _ps_target > _ps_entry:
             _ps_shares   = int(_ps_risk_amt / _ps_risk_per)
-            _ps_capital  = _ps_shares * _ps_entry
             _ps_r        = _ps_reward / _ps_risk_per
-            _ps_weight   = _ps_capital / _ps_port * 100 if _ps_port else 0
             _ps_stop_pct = _ps_risk_per / _ps_entry * 100
             _ps_tgt_pct  = _ps_reward / _ps_entry * 100
 
-            # Row 1 — Trade setup (Entry → Stop → Target clearly visible)
+            # Row 1 — Trade setup
             st.markdown("**Trade Setup**")
             _po1, _po2, _po3, _po4 = st.columns(4)
             _po1.metric("Entry",  f"₹{_ps_entry:,.2f}")
@@ -2276,21 +2274,39 @@ with tab_positions:
                         delta="Good" if _ps_r >= 2 else "Below 2R min",
                         delta_color="normal" if _ps_r >= 2 else "inverse")
 
-            # Row 2 — Sizing output
+            # Row 2 — Qty input + computed sizing
             st.markdown("**Position Sizing**")
-            _ps1, _ps2, _ps3, _ps4 = st.columns(4)
-            _ps1.metric("Max shares",       f"{_ps_shares:,}")
-            _ps2.metric("Capital required", fmt(_ps_capital))
-            _ps3.metric("Portfolio weight", f"{_ps_weight:.1f}%")
-            _ps4.metric("Risk ₹",           fmt(_ps_risk_amt))
+            _pq_col, _pm_col = st.columns([1, 3])
+            _ps_qty = _pq_col.number_input(
+                "Qty (shares)",
+                min_value=1, value=_ps_shares, step=1, key="ps_qty",
+                help="Pre-filled to max risk-based shares — adjust to your actual lot size"
+            )
+            # Recompute all outputs from actual qty
+            _ps_capital = _ps_qty * _ps_entry
+            _ps_actual_risk = _ps_qty * _ps_risk_per
+            _ps_actual_reward = _ps_qty * _ps_reward
+            _ps_weight  = _ps_capital / _ps_port * 100 if _ps_port else 0
+
+            with _pm_col:
+                _ps1, _ps2, _ps3, _ps4 = st.columns(4)
+                _ps1.metric("Capital required", fmt(_ps_capital))
+                _ps2.metric("Portfolio weight", f"{_ps_weight:.1f}%")
+                _ps3.metric("Risk ₹",           fmt(_ps_actual_risk))
+                _ps4.metric("Profit potential", fmt(_ps_actual_reward))
 
             if _ps_atr:
                 st.caption(
-                    f"Stop = {_ps_risk_per / _ps_atr:.2f}× ATR · "
-                    f"ATR(14) = ₹{_ps_atr:,.2f}"
+                    f"Max risk-based qty: {_ps_shares:,} shares · "
+                    f"Stop = {_ps_risk_per / _ps_atr:.2f}× ATR(₹{_ps_atr:,.2f})"
                 )
             if _ps_weight > 25:
                 st.warning(f"Position weight {_ps_weight:.1f}% exceeds 25% concentration limit.")
+            if _ps_actual_risk > _ps_risk_amt * 1.1:
+                st.warning(
+                    f"Qty {_ps_qty:,} risks {fmt(_ps_actual_risk)} — "
+                    f"above your {_ps_risk_pct}% limit of {fmt(_ps_risk_amt)}."
+                )
 
         elif _ps_target <= _ps_entry:
             st.error("Target must be above entry price.")
