@@ -721,9 +721,9 @@ else:
     breadth = None
 
 # Tactical Ladder tiers (dual-condition: EMA distance + breadth)
-LADDER_TIERS = cfg.LADDER_TIERS
-
-CAPITAL_ARCH = cfg.CAPITAL_ARCH
+LADDER_TIERS  = cfg.LADDER_TIERS
+HARVEST_TIERS = cfg.HARVEST_TIERS
+CAPITAL_ARCH  = cfg.CAPITAL_ARCH
 
 active = [p for p in D["pos"] if p.get("status") == "active"]
 exited = [p for p in D["pos"] if p.get("status") == "exited"]
