@@ -2167,19 +2167,22 @@ with tab_positions:
         _ps_yf_suffix = ".NS" if _ps_exchange == "NSE" else ".BO"
 
         # ── Fetch data when ticker resolved ──────────────────────────────
+        # fetch_stock_history always appends .NS internally — pass raw ticker for NSE.
+        # For BSE, bypass it entirely and use yf.download with .BO suffix.
         _ps_atr = _ps_cmp_live = _ps_52w_high = _ps_52w_low = None
         if _ps_ticker:
+            # Strip any exchange suffix the user may have typed
+            _ps_base = (_ps_ticker.removesuffix(".NS").removesuffix(".BO")
+                        if hasattr(str, "removesuffix")
+                        else _ps_ticker.replace(".NS", "").replace(".BO", ""))
             try:
-                _ps_hist = fetch_stock_history(_ps_ticker + _ps_yf_suffix
-                                               if not _ps_ticker.endswith((".NS", ".BO"))
-                                               else _ps_ticker,
-                                               period="1y")
-                # fetch_stock_history already appends .NS — pass raw ticker for NSE,
-                # for BSE override via the symbol directly
-                if _ps_exchange == "BSE":
+                if _ps_exchange == "NSE":
+                    # fetch_stock_history appends .NS itself — pass base ticker
+                    _ps_hist = fetch_stock_history(_ps_base, period="1y")
+                else:
                     import yfinance as _yf
                     _ps_raw = _yf.download(
-                        f"{_ps_ticker}.BO", period="1y", progress=False, auto_adjust=True
+                        f"{_ps_base}.BO", period="1y", progress=False, auto_adjust=True
                     )
                     if not _ps_raw.empty:
                         _ps_raw = _ps_raw.reset_index()
@@ -2202,17 +2205,17 @@ with tab_positions:
                         st.session_state["ps_stop_manual"] = round(_ps_cmp_live * 0.95, 2)
                         st.session_state["_ps_last_ticker"] = _ps_ticker
                     st.success(
-                        f"**{_ps_ticker}** ({_ps_exchange}) — "
+                        f"**{_ps_base}** ({_ps_exchange}) — "
                         f"CMP ₹{_ps_cmp_live:,.2f} · ATR(14) ₹{_ps_atr:,.2f} · "
                         f"52w H ₹{_ps_52w_high:,.0f} / L ₹{_ps_52w_low:,.0f}"
                     )
                 else:
                     st.warning(
-                        f"No data for **{_ps_ticker}** on {_ps_exchange} — "
+                        f"No data for **{_ps_base}** on {_ps_exchange} — "
                         "check the ticker or try the other exchange."
                     )
             except Exception as _ps_err:
-                st.warning(f"Could not fetch **{_ps_ticker}**: {_ps_err}")
+                st.warning(f"Could not fetch **{_ps_base}**: {_ps_err}")
 
         # ── Inputs (session state drives values after ticker fetch) ──────
         _ps_i1, _ps_i2, _ps_i3 = st.columns(3)
