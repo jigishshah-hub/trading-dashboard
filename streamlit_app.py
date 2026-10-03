@@ -2128,6 +2128,36 @@ with tab_positions:
             sc3a.metric("Max", f"{max(days_list)}d")
             sc3b.metric("Min", f"{min(days_list)}d")
 
+    # ── Position Sizing Calculator ──────────────────────────────────────────
+    with st.expander("🧮 Position Sizing Calculator", expanded=False):
+        st.caption("Given your entry, stop, and portfolio size — compute max shares and risk.")
+        _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+        _ps_entry  = _sc1.number_input("Entry price (₹)", min_value=1.0, value=100.0, step=0.5, key="ps_entry")
+        _ps_stop   = _sc2.number_input("Stop-loss (₹)",  min_value=0.1, value=95.0,  step=0.5, key="ps_stop")
+        _ps_target = _sc3.number_input("Target (₹)",     min_value=1.0, value=115.0, step=0.5, key="ps_target")
+        _ps_port   = _sc4.number_input("Portfolio size (₹)", min_value=10_000, value=1_000_000, step=10_000, key="ps_port")
+        _ps_risk_pct = st.slider("Max risk per trade (% of portfolio)", 0.5, 5.0, 1.0, 0.25, key="ps_risk_pct")
+
+        _ps_risk_amt = _ps_port * _ps_risk_pct / 100
+        _ps_risk_per = _ps_entry - _ps_stop
+        _ps_reward   = _ps_target - _ps_entry
+
+        if _ps_risk_per > 0:
+            _ps_shares = int(_ps_risk_amt / _ps_risk_per)
+            _ps_capital = _ps_shares * _ps_entry
+            _ps_r = _ps_reward / _ps_risk_per if _ps_risk_per else 0
+            _ps_weight = _ps_capital / _ps_port * 100 if _ps_port else 0
+            _pr1, _pr2, _pr3, _pr4, _pr5 = st.columns(5)
+            _pr1.metric("Max shares",        f"{_ps_shares:,}")
+            _pr2.metric("Capital required",  fmt(_ps_capital))
+            _pr3.metric("Portfolio weight",  f"{_ps_weight:.1f}%")
+            _pr4.metric("Risk amount",       fmt(_ps_risk_amt))
+            _pr5.metric("R-multiple (R:R)",  f"{_ps_r:.2f}R")
+            if _ps_r < 2:
+                st.warning(f"R:R is {_ps_r:.2f} — below 2R minimum. Widen target or tighten stop.")
+        else:
+            st.error("Stop-loss must be below entry price.")
+
     # Detail panel on row click
     st.divider()
     selected_rows = event.selection.rows if (not df_pos.empty and event.selection) else []
@@ -2814,6 +2844,33 @@ with tab_risk:
     )
     st.plotly_chart(fig_heat, use_container_width=True)
 
+    # ── Sector Allocation (weight, not risk) ───────────────────────────────
+    st.markdown("#### Sector Allocation")
+    st.caption("Portfolio weight % by sector — current open positions only")
+    if positions:
+        _sec_wt = {}
+        for _p in positions:
+            _sec_wt[_p["sector"]] = _sec_wt.get(_p["sector"], 0) + _p["weight"]
+        _sec_sorted = sorted(_sec_wt.items(), key=lambda kv: kv[1], reverse=True)
+        _sec_names = [s for s, _ in _sec_sorted]
+        _sec_vals  = [round(w, 1) for _, w in _sec_sorted]
+        fig_sec = go.Figure(go.Bar(
+            x=_sec_vals, y=_sec_names, orientation="h",
+            marker_color="#5d7bd0",
+            text=[f"{v:.1f}%" for v in _sec_vals],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
+        ))
+        fig_sec.update_layout(
+            height=max(180, 38 * len(_sec_names)),
+            margin=dict(l=0, r=40, t=10, b=10),
+            xaxis=dict(title="Weight %", showgrid=True, gridcolor="#eef0f3"),
+            yaxis=dict(showgrid=False, autorange="reversed"),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_sec, use_container_width=True)
+
     st.divider()
     st.markdown("#### Live Risk Checks")
     st.caption("Evaluated against current positions. Adjust the limits to match your risk policy.")
@@ -2976,6 +3033,13 @@ with tab_perf:
                     "Entry": st.column_config.NumberColumn(format="₹%.0f"),
                     "Exit": st.column_config.NumberColumn(format="₹%.0f"),
                 })
+            st.download_button(
+                "⬇ Export trade log CSV",
+                data=df_closed.to_csv(index=False),
+                file_name=f"trade_log_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="dl_trade_log",
+            )
         else:
             st.caption("No closed trades yet.")
 

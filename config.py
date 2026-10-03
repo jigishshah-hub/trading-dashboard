@@ -147,3 +147,23 @@ BACKTEST_VIX_GATE_T3PLUS_MIN = 25
 # days (covers weekend + holiday clusters); beyond it the feed is stale.
 # ─────────────────────────────────────────────────────────────────────────────
 PRICE_EOD_STALE_DAYS = 6
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRICE & VOLUME ALERT THRESHOLDS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Intraday move: alert when stock moves > this % from today's open.
+ALERT_INTRADAY_MOVE_PCT = 4.0        # ±4% intraday triggers alert
+
+# Volume spike: alert when today's volume > this multiple of the rolling avg.
+ALERT_VOLUME_SPIKE_MULT = 3.0        # 3× avg volume = spike
+ALERT_VOLUME_AVG_DAYS = 20           # rolling window for avg volume
+
+# 52-week proximity: alert when price is within this % of 52w high or low.
+ALERT_52W_HIGH_PROXIMITY_PCT = 3.0   # within 3% of 52w high → breakout watch
+ALERT_52W_LOW_PROXIMITY_PCT = 5.0    # within 5% of 52w low → danger
+
+# Minimum rows in daily_snapshots to trust Supabase-computed 52w range.
+# Below this threshold the system falls back to yfinance fast_info.
+ALERT_52W_MIN_ROWS = 50

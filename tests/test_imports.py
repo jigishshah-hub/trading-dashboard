@@ -11,6 +11,10 @@ def test_config_imports():
     import config  # noqa: F401
 
 
+def test_alert_check_imports():
+    import alert_check  # noqa: F401
+
+
 def test_backtest_engine_imports_if_present():
     import pytest
     if importlib.util.find_spec("backtest_engine") is None:
