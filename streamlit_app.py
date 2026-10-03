@@ -2256,27 +2256,44 @@ with tab_positions:
         _ps_reward   = _ps_target - _ps_entry
 
         st.divider()
-        if _ps_risk_per > 0 and _ps_entry > 0:
+        if _ps_risk_per > 0 and _ps_entry > 0 and _ps_target > _ps_entry:
             _ps_shares   = int(_ps_risk_amt / _ps_risk_per)
             _ps_capital  = _ps_shares * _ps_entry
             _ps_r        = _ps_reward / _ps_risk_per
             _ps_weight   = _ps_capital / _ps_port * 100 if _ps_port else 0
             _ps_stop_pct = _ps_risk_per / _ps_entry * 100
+            _ps_tgt_pct  = _ps_reward / _ps_entry * 100
 
-            _pr1, _pr2, _pr3, _pr4, _pr5, _pr6 = st.columns(6)
-            _pr1.metric("Max shares",       f"{_ps_shares:,}")
-            _pr2.metric("Capital required", fmt(_ps_capital))
-            _pr3.metric("Portfolio weight", f"{_ps_weight:.1f}%")
-            _pr4.metric("Risk ₹",           fmt(_ps_risk_amt))
-            _pr5.metric("Stop distance",    f"{_ps_stop_pct:.1f}%")
-            _pr6.metric("R:R",              f"{_ps_r:.2f}R")
+            # Row 1 — Trade setup (Entry → Stop → Target clearly visible)
+            st.markdown("**Trade Setup**")
+            _po1, _po2, _po3, _po4 = st.columns(4)
+            _po1.metric("Entry",  f"₹{_ps_entry:,.2f}")
+            _po2.metric("Stop",   f"₹{_ps_stop:,.2f}",
+                        delta=f"−{_ps_stop_pct:.1f}%", delta_color="inverse")
+            _po3.metric("Target", f"₹{_ps_target:,.2f}",
+                        delta=f"+{_ps_tgt_pct:.1f}%")
+            _po4.metric("R:R",    f"{_ps_r:.2f}R",
+                        delta="Good" if _ps_r >= 2 else "Below 2R min",
+                        delta_color="normal" if _ps_r >= 2 else "inverse")
+
+            # Row 2 — Sizing output
+            st.markdown("**Position Sizing**")
+            _ps1, _ps2, _ps3, _ps4 = st.columns(4)
+            _ps1.metric("Max shares",       f"{_ps_shares:,}")
+            _ps2.metric("Capital required", fmt(_ps_capital))
+            _ps3.metric("Portfolio weight", f"{_ps_weight:.1f}%")
+            _ps4.metric("Risk ₹",           fmt(_ps_risk_amt))
 
             if _ps_atr:
-                st.caption(f"Implied stop = {_ps_risk_per / _ps_atr:.2f}× ATR from entry")
-            if _ps_r < 2:
-                st.warning(f"R:R {_ps_r:.2f} is below 2R minimum — widen target or tighten stop.")
+                st.caption(
+                    f"Stop = {_ps_risk_per / _ps_atr:.2f}× ATR · "
+                    f"ATR(14) = ₹{_ps_atr:,.2f}"
+                )
             if _ps_weight > 25:
                 st.warning(f"Position weight {_ps_weight:.1f}% exceeds 25% concentration limit.")
+
+        elif _ps_target <= _ps_entry:
+            st.error("Target must be above entry price.")
         elif _ps_risk_per <= 0:
             st.error("Stop-loss must be below entry price.")
 
