@@ -2128,34 +2128,115 @@ with tab_positions:
             sc3a.metric("Max", f"{max(days_list)}d")
             sc3b.metric("Min", f"{min(days_list)}d")
 
-    # ── Position Sizing Calculator ──────────────────────────────────────────
+    # ── Position Sizing Calculator v2 ───────────────────────────────────────
     with st.expander("🧮 Position Sizing Calculator", expanded=False):
-        st.caption("Given your entry, stop, and portfolio size — compute max shares and risk.")
-        _sc1, _sc2, _sc3, _sc4 = st.columns(4)
-        _ps_entry  = _sc1.number_input("Entry price (₹)", min_value=1.0, value=100.0, step=0.5, key="ps_entry")
-        _ps_stop   = _sc2.number_input("Stop-loss (₹)",  min_value=0.1, value=95.0,  step=0.5, key="ps_stop")
-        _ps_target = _sc3.number_input("Target (₹)",     min_value=1.0, value=115.0, step=0.5, key="ps_target")
-        _ps_port   = _sc4.number_input("Portfolio size (₹)", min_value=10_000, value=1_000_000, step=10_000, key="ps_port")
-        _ps_risk_pct = st.slider("Max risk per trade (% of portfolio)", 0.5, 5.0, 1.0, 0.25, key="ps_risk_pct")
+        st.caption(
+            "Type any NSE ticker to auto-load price + ATR, or enter values manually. "
+            "Portfolio size pulled from live data."
+        )
 
+        # ── Ticker lookup ────────────────────────────────────────────────
+        _ps_col_tk, _ps_col_mode = st.columns([2, 2])
+        _ps_ticker = _ps_col_tk.text_input(
+            "NSE Ticker (e.g. DIXON, TATAPOWER)", value="", key="ps_ticker"
+        ).strip().upper()
+        _ps_stop_mode = _ps_col_mode.radio(
+            "Stop method", ["ATR-based", "Manual"], horizontal=True, key="ps_stop_mode"
+        )
+
+        # Fetch ATR + CMP when ticker is provided
+        _ps_atr = None
+        _ps_cmp_live = None
+        _ps_52w_high = _ps_52w_low = None
+        if _ps_ticker:
+            try:
+                _ps_hist = fetch_stock_history(_ps_ticker, period="1y")
+                if _ps_hist is not None and not _ps_hist.empty:
+                    _ps_tech = compute_technicals(_ps_hist)
+                    _ps_cmp_live = float(_ps_tech["Close"].iloc[-1])
+                    _ps_atr      = float(_ps_tech["ATR"].iloc[-1])
+                    _ps_52w_high = float(_ps_tech["Close"].max())
+                    _ps_52w_low  = float(_ps_tech["Close"].min())
+                    st.success(
+                        f"**{_ps_ticker}** — CMP ₹{_ps_cmp_live:,.2f} · "
+                        f"ATR(14) ₹{_ps_atr:,.2f} · "
+                        f"52w H ₹{_ps_52w_high:,.0f} / L ₹{_ps_52w_low:,.0f}"
+                    )
+                else:
+                    st.warning(f"No data found for **{_ps_ticker}** — check the ticker and try again.")
+            except Exception as _ps_err:
+                st.warning(f"Could not fetch **{_ps_ticker}**: {_ps_err}")
+
+        # ── Inputs ───────────────────────────────────────────────────────
+        _ps_i1, _ps_i2, _ps_i3 = st.columns(3)
+        _ps_entry = _ps_i1.number_input(
+            "Entry price (₹)",
+            min_value=0.1,
+            value=float(round(_ps_cmp_live, 2)) if _ps_cmp_live else 100.0,
+            step=0.5, key="ps_entry",
+        )
+        _ps_target = _ps_i2.number_input(
+            "Target (₹)",
+            min_value=0.1,
+            value=float(round(_ps_cmp_live * 1.15, 2)) if _ps_cmp_live else 115.0,
+            step=0.5, key="ps_target",
+        )
+
+        if _ps_stop_mode == "ATR-based" and _ps_atr:
+            _ps_atr_mult = _ps_i3.slider(
+                "ATR multiple for stop", 1.0, 3.0, 2.0, 0.25, key="ps_atr_mult"
+            )
+            _ps_stop = _ps_entry - _ps_atr_mult * _ps_atr
+            st.caption(
+                f"Stop = ₹{_ps_entry:,.2f} − {_ps_atr_mult}× ATR(₹{_ps_atr:,.2f}) "
+                f"= **₹{_ps_stop:,.2f}**"
+            )
+        else:
+            _ps_stop = _ps_i3.number_input(
+                "Stop-loss (₹)", min_value=0.1,
+                value=float(round(_ps_cmp_live * 0.95, 2)) if _ps_cmp_live else 95.0,
+                step=0.5, key="ps_stop_manual",
+            )
+
+        # Portfolio size from live data; user can override
+        _ps_port_default = int(total_value) if total_value and total_value > 0 else 1_000_000
+        _ps_risk_pct = st.slider(
+            "Max risk per trade (% of portfolio)", 0.5, 5.0, 1.0, 0.25, key="ps_risk_pct"
+        )
+        _ps_port = st.number_input(
+            "Portfolio size (₹) — pre-filled from live data",
+            min_value=10_000, value=_ps_port_default, step=10_000, key="ps_port",
+        )
+
+        # ── Output ───────────────────────────────────────────────────────
         _ps_risk_amt = _ps_port * _ps_risk_pct / 100
         _ps_risk_per = _ps_entry - _ps_stop
         _ps_reward   = _ps_target - _ps_entry
 
-        if _ps_risk_per > 0:
-            _ps_shares = int(_ps_risk_amt / _ps_risk_per)
+        st.divider()
+        if _ps_risk_per > 0 and _ps_entry > 0:
+            _ps_shares  = int(_ps_risk_amt / _ps_risk_per)
             _ps_capital = _ps_shares * _ps_entry
-            _ps_r = _ps_reward / _ps_risk_per if _ps_risk_per else 0
-            _ps_weight = _ps_capital / _ps_port * 100 if _ps_port else 0
-            _pr1, _pr2, _pr3, _pr4, _pr5 = st.columns(5)
-            _pr1.metric("Max shares",        f"{_ps_shares:,}")
-            _pr2.metric("Capital required",  fmt(_ps_capital))
-            _pr3.metric("Portfolio weight",  f"{_ps_weight:.1f}%")
-            _pr4.metric("Risk amount",       fmt(_ps_risk_amt))
-            _pr5.metric("R-multiple (R:R)",  f"{_ps_r:.2f}R")
+            _ps_r       = _ps_reward / _ps_risk_per
+            _ps_weight  = _ps_capital / _ps_port * 100 if _ps_port else 0
+            _ps_stop_pct = _ps_risk_per / _ps_entry * 100
+
+            _pr1, _pr2, _pr3, _pr4, _pr5, _pr6 = st.columns(6)
+            _pr1.metric("Max shares",       f"{_ps_shares:,}")
+            _pr2.metric("Capital required", fmt(_ps_capital))
+            _pr3.metric("Portfolio weight", f"{_ps_weight:.1f}%")
+            _pr4.metric("Risk ₹",           fmt(_ps_risk_amt))
+            _pr5.metric("Stop distance",    f"{_ps_stop_pct:.1f}%")
+            _pr6.metric("R:R",              f"{_ps_r:.2f}R")
+
+            if _ps_atr:
+                _implied_atr_mult = _ps_risk_per / _ps_atr
+                st.caption(f"Stop = {_implied_atr_mult:.2f}× ATR from entry")
             if _ps_r < 2:
-                st.warning(f"R:R is {_ps_r:.2f} — below 2R minimum. Widen target or tighten stop.")
-        else:
+                st.warning(f"R:R {_ps_r:.2f} is below 2R minimum — widen target or tighten stop.")
+            if _ps_weight > 25:
+                st.warning(f"Position weight {_ps_weight:.1f}% exceeds 25% concentration limit.")
+        elif _ps_risk_per <= 0:
             st.error("Stop-loss must be below entry price.")
 
     # Detail panel on row click
