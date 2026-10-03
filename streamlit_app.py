@@ -2131,55 +2131,96 @@ with tab_positions:
     # ── Position Sizing Calculator v2 ───────────────────────────────────────
     with st.expander("🧮 Position Sizing Calculator", expanded=False):
         st.caption(
-            "Type any NSE ticker to auto-load price + ATR, or enter values manually. "
+            "Pick a tracked stock or type any ticker. Exchange toggle supports NSE & BSE. "
             "Portfolio size pulled from live data."
         )
 
-        # ── Ticker lookup ────────────────────────────────────────────────
-        _ps_col_tk, _ps_col_mode = st.columns([2, 2])
-        _ps_ticker = _ps_col_tk.text_input(
-            "NSE Ticker (e.g. DIXON, TATAPOWER)", value="", key="ps_ticker"
+        # ── Row 1: quick-pick + free text + exchange + stop mode ─────────
+        _ps_r1a, _ps_r1b, _ps_r1c, _ps_r1d = st.columns([2, 2, 1, 1])
+
+        # Quick-pick from tracked stocks (searchable selectbox)
+        _ps_tracked = sorted(set(s["ticker"] for s in D["stocks"] if s.get("ticker")))
+        _ps_quickpick = _ps_r1a.selectbox(
+            "Quick-pick (tracked stocks)", ["— type below —"] + _ps_tracked,
+            key="ps_quickpick"
+        )
+        # Free-text overrides quick-pick when filled
+        _ps_freetext = _ps_r1b.text_input(
+            "Or type any ticker", value="", key="ps_freetext",
+            placeholder="e.g. DIXON, TITAN"
         ).strip().upper()
-        _ps_stop_mode = _ps_col_mode.radio(
+        _ps_exchange = _ps_r1c.radio(
+            "Exchange", ["NSE", "BSE"], horizontal=True, key="ps_exchange"
+        )
+        _ps_stop_mode = _ps_r1d.radio(
             "Stop method", ["ATR-based", "Manual"], horizontal=True, key="ps_stop_mode"
         )
 
-        # Fetch ATR + CMP when ticker is provided
-        _ps_atr = None
-        _ps_cmp_live = None
-        _ps_52w_high = _ps_52w_low = None
+        # Resolve ticker: free-text wins over quick-pick
+        if _ps_freetext:
+            _ps_ticker = _ps_freetext
+        elif _ps_quickpick != "— type below —":
+            _ps_ticker = _ps_quickpick
+        else:
+            _ps_ticker = ""
+
+        _ps_yf_suffix = ".NS" if _ps_exchange == "NSE" else ".BO"
+
+        # ── Fetch data when ticker resolved ──────────────────────────────
+        _ps_atr = _ps_cmp_live = _ps_52w_high = _ps_52w_low = None
         if _ps_ticker:
             try:
-                _ps_hist = fetch_stock_history(_ps_ticker, period="1y")
+                _ps_hist = fetch_stock_history(_ps_ticker + _ps_yf_suffix
+                                               if not _ps_ticker.endswith((".NS", ".BO"))
+                                               else _ps_ticker,
+                                               period="1y")
+                # fetch_stock_history already appends .NS — pass raw ticker for NSE,
+                # for BSE override via the symbol directly
+                if _ps_exchange == "BSE":
+                    import yfinance as _yf
+                    _ps_raw = _yf.download(
+                        f"{_ps_ticker}.BO", period="1y", progress=False, auto_adjust=True
+                    )
+                    if not _ps_raw.empty:
+                        _ps_raw = _ps_raw.reset_index()
+                        _ps_raw.columns = [c[0] if isinstance(c, tuple) else c
+                                           for c in _ps_raw.columns]
+                        _ps_hist = _ps_raw
+                    else:
+                        _ps_hist = None
+
                 if _ps_hist is not None and not _ps_hist.empty:
-                    _ps_tech = compute_technicals(_ps_hist)
+                    _ps_tech    = compute_technicals(_ps_hist)
                     _ps_cmp_live = float(_ps_tech["Close"].iloc[-1])
                     _ps_atr      = float(_ps_tech["ATR"].iloc[-1])
                     _ps_52w_high = float(_ps_tech["Close"].max())
                     _ps_52w_low  = float(_ps_tech["Close"].min())
+                    # Force-update entry/target in session state when ticker changes
+                    if st.session_state.get("_ps_last_ticker") != _ps_ticker:
+                        st.session_state["ps_entry"]  = round(_ps_cmp_live, 2)
+                        st.session_state["ps_target"] = round(_ps_cmp_live * 1.15, 2)
+                        st.session_state["ps_stop_manual"] = round(_ps_cmp_live * 0.95, 2)
+                        st.session_state["_ps_last_ticker"] = _ps_ticker
                     st.success(
-                        f"**{_ps_ticker}** — CMP ₹{_ps_cmp_live:,.2f} · "
-                        f"ATR(14) ₹{_ps_atr:,.2f} · "
+                        f"**{_ps_ticker}** ({_ps_exchange}) — "
+                        f"CMP ₹{_ps_cmp_live:,.2f} · ATR(14) ₹{_ps_atr:,.2f} · "
                         f"52w H ₹{_ps_52w_high:,.0f} / L ₹{_ps_52w_low:,.0f}"
                     )
                 else:
-                    st.warning(f"No data found for **{_ps_ticker}** — check the ticker and try again.")
+                    st.warning(
+                        f"No data for **{_ps_ticker}** on {_ps_exchange} — "
+                        "check the ticker or try the other exchange."
+                    )
             except Exception as _ps_err:
                 st.warning(f"Could not fetch **{_ps_ticker}**: {_ps_err}")
 
-        # ── Inputs ───────────────────────────────────────────────────────
+        # ── Inputs (session state drives values after ticker fetch) ──────
         _ps_i1, _ps_i2, _ps_i3 = st.columns(3)
         _ps_entry = _ps_i1.number_input(
-            "Entry price (₹)",
-            min_value=0.1,
-            value=float(round(_ps_cmp_live, 2)) if _ps_cmp_live else 100.0,
-            step=0.5, key="ps_entry",
+            "Entry price (₹)", min_value=0.1, step=0.5, key="ps_entry",
         )
         _ps_target = _ps_i2.number_input(
-            "Target (₹)",
-            min_value=0.1,
-            value=float(round(_ps_cmp_live * 1.15, 2)) if _ps_cmp_live else 115.0,
-            step=0.5, key="ps_target",
+            "Target (₹)", min_value=0.1, step=0.5, key="ps_target",
         )
 
         if _ps_stop_mode == "ATR-based" and _ps_atr:
@@ -2193,19 +2234,20 @@ with tab_positions:
             )
         else:
             _ps_stop = _ps_i3.number_input(
-                "Stop-loss (₹)", min_value=0.1,
-                value=float(round(_ps_cmp_live * 0.95, 2)) if _ps_cmp_live else 95.0,
-                step=0.5, key="ps_stop_manual",
+                "Stop-loss (₹)", min_value=0.1, step=0.5, key="ps_stop_manual",
             )
 
-        # Portfolio size from live data; user can override
+        # Portfolio size pre-filled from live portfolio value
         _ps_port_default = int(total_value) if total_value and total_value > 0 else 1_000_000
+        if "_ps_port_init" not in st.session_state:
+            st.session_state["ps_port"] = _ps_port_default
+            st.session_state["_ps_port_init"] = True
         _ps_risk_pct = st.slider(
             "Max risk per trade (% of portfolio)", 0.5, 5.0, 1.0, 0.25, key="ps_risk_pct"
         )
         _ps_port = st.number_input(
             "Portfolio size (₹) — pre-filled from live data",
-            min_value=10_000, value=_ps_port_default, step=10_000, key="ps_port",
+            min_value=10_000, step=10_000, key="ps_port",
         )
 
         # ── Output ───────────────────────────────────────────────────────
@@ -2214,28 +2256,60 @@ with tab_positions:
         _ps_reward   = _ps_target - _ps_entry
 
         st.divider()
-        if _ps_risk_per > 0 and _ps_entry > 0:
-            _ps_shares  = int(_ps_risk_amt / _ps_risk_per)
-            _ps_capital = _ps_shares * _ps_entry
-            _ps_r       = _ps_reward / _ps_risk_per
-            _ps_weight  = _ps_capital / _ps_port * 100 if _ps_port else 0
+        if _ps_risk_per > 0 and _ps_entry > 0 and _ps_target > _ps_entry:
+            _ps_shares   = int(_ps_risk_amt / _ps_risk_per)
+            _ps_r        = _ps_reward / _ps_risk_per
             _ps_stop_pct = _ps_risk_per / _ps_entry * 100
+            _ps_tgt_pct  = _ps_reward / _ps_entry * 100
 
-            _pr1, _pr2, _pr3, _pr4, _pr5, _pr6 = st.columns(6)
-            _pr1.metric("Max shares",       f"{_ps_shares:,}")
-            _pr2.metric("Capital required", fmt(_ps_capital))
-            _pr3.metric("Portfolio weight", f"{_ps_weight:.1f}%")
-            _pr4.metric("Risk ₹",           fmt(_ps_risk_amt))
-            _pr5.metric("Stop distance",    f"{_ps_stop_pct:.1f}%")
-            _pr6.metric("R:R",              f"{_ps_r:.2f}R")
+            # Row 1 — Trade setup
+            st.markdown("**Trade Setup**")
+            _po1, _po2, _po3, _po4 = st.columns(4)
+            _po1.metric("Entry",  f"₹{_ps_entry:,.2f}")
+            _po2.metric("Stop",   f"₹{_ps_stop:,.2f}",
+                        delta=f"−{_ps_stop_pct:.1f}%", delta_color="inverse")
+            _po3.metric("Target", f"₹{_ps_target:,.2f}",
+                        delta=f"+{_ps_tgt_pct:.1f}%")
+            _po4.metric("R:R",    f"{_ps_r:.2f}R",
+                        delta="Good" if _ps_r >= 2 else "Below 2R min",
+                        delta_color="normal" if _ps_r >= 2 else "inverse")
+
+            # Row 2 — Qty input + computed sizing
+            st.markdown("**Position Sizing**")
+            _pq_col, _pm_col = st.columns([1, 3])
+            _ps_qty = _pq_col.number_input(
+                "Qty (shares)",
+                min_value=1, value=_ps_shares, step=1, key="ps_qty",
+                help="Pre-filled to max risk-based shares — adjust to your actual lot size"
+            )
+            # Recompute all outputs from actual qty
+            _ps_capital = _ps_qty * _ps_entry
+            _ps_actual_risk = _ps_qty * _ps_risk_per
+            _ps_actual_reward = _ps_qty * _ps_reward
+            _ps_weight  = _ps_capital / _ps_port * 100 if _ps_port else 0
+
+            with _pm_col:
+                _ps1, _ps2, _ps3, _ps4 = st.columns(4)
+                _ps1.metric("Capital required", fmt(_ps_capital))
+                _ps2.metric("Portfolio weight", f"{_ps_weight:.1f}%")
+                _ps3.metric("Risk ₹",           fmt(_ps_actual_risk))
+                _ps4.metric("Profit potential", fmt(_ps_actual_reward))
 
             if _ps_atr:
-                _implied_atr_mult = _ps_risk_per / _ps_atr
-                st.caption(f"Stop = {_implied_atr_mult:.2f}× ATR from entry")
-            if _ps_r < 2:
-                st.warning(f"R:R {_ps_r:.2f} is below 2R minimum — widen target or tighten stop.")
+                st.caption(
+                    f"Max risk-based qty: {_ps_shares:,} shares · "
+                    f"Stop = {_ps_risk_per / _ps_atr:.2f}× ATR(₹{_ps_atr:,.2f})"
+                )
             if _ps_weight > 25:
                 st.warning(f"Position weight {_ps_weight:.1f}% exceeds 25% concentration limit.")
+            if _ps_actual_risk > _ps_risk_amt * 1.1:
+                st.warning(
+                    f"Qty {_ps_qty:,} risks {fmt(_ps_actual_risk)} — "
+                    f"above your {_ps_risk_pct}% limit of {fmt(_ps_risk_amt)}."
+                )
+
+        elif _ps_target <= _ps_entry:
+            st.error("Target must be above entry price.")
         elif _ps_risk_per <= 0:
             st.error("Stop-loss must be below entry price.")
 
