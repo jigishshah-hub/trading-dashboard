@@ -1089,6 +1089,32 @@ st.markdown("""
     .fw-here {display: inline-block; font-size: 9.5px; font-weight: 800; letter-spacing: .05em;
               background: #f59e0b; color: #fff; padding: 1px 6px; border-radius: 4px;
               margin-left: 6px; vertical-align: 1px;}
+
+    /* ── V3 Command Center ──────────────────────────────────── */
+    div[data-testid="stMetric"] {
+        background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+        padding: 12px 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    }
+    .ov-cmd-strip {display:flex; gap:10px; margin-bottom:14px;}
+    .ov-cmd-card  {flex:1; background:#fff; border:1px solid #e5e7eb; border-radius:10px;
+                   padding:14px 16px; box-shadow:0 1px 4px rgba(0,0,0,.06); min-width:0;}
+    .ov-cmd-k  {font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.07em;
+                color:#9ca3af; margin-bottom:5px;}
+    .ov-cmd-v  {font-size:22px; font-weight:800; line-height:1.15; color:#111827;}
+    .ov-cmd-d  {font-size:11px; color:#6b7280; margin-top:4px;}
+    .ov-health {background:#fff; border:1px solid #e5e7eb; border-radius:10px;
+                padding:14px 16px; box-shadow:0 1px 4px rgba(0,0,0,.06);}
+    .ov-hdim   {display:flex; align-items:center; justify-content:space-between;
+                padding:7px 0; border-bottom:1px solid #f3f4f6; font-size:12.5px;}
+    .ov-hdim:last-child {border-bottom:none;}
+    .ov-hbadge {display:inline-block; padding:2px 10px; border-radius:99px;
+                font-size:11px; font-weight:700; letter-spacing:.03em;}
+    .ov-conc-row  {margin:5px 0;}
+    .ov-conc-meta {display:flex; justify-content:space-between; font-size:11.5px;
+                   margin-bottom:3px; color:#374151; font-weight:600;}
+    .ov-conc-pct  {font-weight:400; color:#6b7280;}
+    .ov-conc-trk  {height:10px; background:#f3f4f6; border-radius:5px; overflow:hidden;}
+    .ov-conc-fill {height:100%; border-radius:5px; transition:width .3s;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1335,6 +1361,48 @@ with tab_overview:
             st.cache_data.clear()
             st.rerun()
 
+    # ── Ordinal suffix helper ─────────────────────────────────
+    def _ov_ordinal(n):
+        n = int(n)
+        sfx = "th" if 11 <= (n % 100) <= 13 else ["th","st","nd","rd","th"][min(n % 10, 4)]
+        return f"{n}{sfx}"
+
+    # ── 4-panel command strip ─────────────────────────────────
+    _n_d = len(danger_alerts)
+    _n_w = len(warning_alerts)
+    _act_c  = "#a92e2e" if _n_d else "#c05621" if _n_w else "#216c30"
+    _act_bg = "#feecec"  if _n_d else "#fff0e6"  if _n_w else "#eaf7ed"
+    _act_lbl = (f"🔴 {_n_d} Critical · 🟠 {_n_w} Watch" if _n_d or _n_w else "✓ All clear")
+    _act_sub = f"{_n_d + _n_w} item(s) need attention" if (_n_d or _n_w) else "No open actions"
+    _mkt_c  = "#c83b3b" if (_ov_pct or 0) < 0 else "#216c30"
+    _mkt_bg = "#feecec"  if (_ov_pct or 0) < 0 else "#eaf7ed"
+    _mkt_lbl = f"{_ov_pct:+.2f}%" if _ov_pct is not None else "—"
+    _mkt_sub = f'{"Below" if (_ov_pct or 0) < 0 else "Above"} 200 EMA · {_ov_state}'
+    _pnl_pct = net_pnl / total_invested * 100 if total_invested else 0
+    _pnl_c  = "#216c30" if net_pnl >= 0 else "#c83b3b"
+    _pnl_bg = "#eaf7ed"  if net_pnl >= 0 else "#feecec"
+
+    st.markdown(
+        f'<div class="ov-cmd-strip">'
+        f'<div class="ov-cmd-card" style="border-top:3px solid {_mkt_c};background:{_mkt_bg}20">'
+        f'  <div class="ov-cmd-k">Market</div>'
+        f'  <div class="ov-cmd-v" style="color:{_mkt_c}">{_mkt_lbl}</div>'
+        f'  <div class="ov-cmd-d">{_mkt_sub}</div></div>'
+        f'<div class="ov-cmd-card" style="border-top:3px solid #0d9488;background:#f0fdfa">'
+        f'  <div class="ov-cmd-k">Capital Reserve</div>'
+        f'  <div class="ov-cmd-v" style="color:#0d9488">40%</div>'
+        f'  <div class="ov-cmd-d">Tactical cash · 5 tiers available</div></div>'
+        f'<div class="ov-cmd-card" style="border-top:3px solid {_pnl_c};background:{_pnl_bg}20">'
+        f'  <div class="ov-cmd-k">Portfolio</div>'
+        f'  <div class="ov-cmd-v">{fmt(total_value)}</div>'
+        f'  <div class="ov-cmd-d" style="color:{_pnl_c}">{_pnl_pct:+.2f}% P&L · {len(positions)} positions</div></div>'
+        f'<div class="ov-cmd-card" style="border-top:3px solid {_act_c};background:{_act_bg}40">'
+        f'  <div class="ov-cmd-k">Action Required</div>'
+        f'  <div class="ov-cmd-v" style="color:{_act_c};font-size:15px">{_act_lbl}</div>'
+        f'  <div class="ov-cmd-d">{_act_sub}</div></div>'
+        f'</div>',
+        unsafe_allow_html=True)
+
     # ── ROW 1 — Market State Cards ────────────────────────────
     _m1, _m2, _m3, _m4, _m5 = st.columns(5)
 
@@ -1361,7 +1429,7 @@ with tab_overview:
 
     _credit_g = fear_gauges.get("credit_stress") if fear_gauges else None
     if _credit_g:
-        _m4.metric("Credit Stress", f"{_credit_g['pctile']:.0f}th %ile",
+        _m4.metric("Credit Stress", f"{_ov_ordinal(_credit_g['pctile'])} %ile",
                    delta=f"{_credit_g['chg']:+.2f}%", delta_color="inverse")
         _m4.caption(f"Status: {_credit_g['status'].upper()}")
     else:
@@ -1699,6 +1767,33 @@ with tab_overview:
         _k6.metric("Closed Trades", len(D["closed"]),
                    delta=f"{wins}W / {len(D['closed']) - wins}L" if D["closed"] else None)
 
+        # ── Tactical reserve ring ──
+        _rng_dep = sum(
+            _t["deploy_pct"] for _t in LADDER_TIERS
+            if _ov_pct is not None and _ov_pct <= _t["threshold"]
+            and _ov_bpct is not None and _ov_bpct <= _t["breadth_max"]
+        )
+        _rng_rem = 40 - _rng_dep
+        _fig_ring = go.Figure(go.Pie(
+            values=[_rng_rem, _rng_dep],
+            labels=["Available", "Deployed"],
+            hole=0.72,
+            marker_colors=["#e5f6f0", "#0d9488"] if _rng_dep == 0 else ["#e5e7eb", "#dc2626"],
+            textinfo="none",
+            hovertemplate="%{label}: %{value}%<extra></extra>",
+            sort=False,
+        ))
+        _fig_ring.update_layout(
+            height=140, margin=dict(l=0, r=0, t=4, b=4),
+            paper_bgcolor="rgba(0,0,0,0)", showlegend=False,
+            annotations=[dict(
+                text=f"<b>{_rng_rem}%</b><br><span style='font-size:9px'>Reserve</span>",
+                x=0.5, y=0.5, font_size=13, font_color="#0d9488" if _rng_dep == 0 else "#dc2626",
+                showarrow=False
+            )]
+        )
+        st.plotly_chart(_fig_ring, use_container_width=True, config={"displayModeBar": False})
+
     with _ncc:
         st.markdown("**Nifty 50 vs 200 EMA** <span style='font-size:11px;color:#888'>120-day cycle view</span>",
                     unsafe_allow_html=True)
@@ -1835,7 +1930,7 @@ with tab_overview:
                 _slv_col = SLEEVE_COLORS.get(_slv_name, "#667085")
                 _slv_sign = "+" if _slv_pnl >= 0 else ""
                 with st.expander(
-                    f"{_slv_name}  ·  {fmt(_slv_d['value'])}  ·  {_slv_sign}{_slv_pnl:.2f}%",
+                    f"{_slv_name}  ·  {fmt(_slv_d['invested'])} → {fmt(_slv_d['value'])}  ·  {_slv_sign}{_slv_pnl:.2f}%",
                     expanded=False
                 ):
                     for _sp in _slv_d["positions"]:
@@ -1848,6 +1943,87 @@ with tab_overview:
                             f'<span style="color:{_sp_c}">{_sp["pnl_pct"]:+.2f}%</span>'
                             f'<span style="color:#9ca3af">{_sp["weight"]:.0f}% wt</span>'
                             f'</div>', unsafe_allow_html=True)
+        else:
+            st.caption("No active positions")
+
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+
+    # ── ROW 6 — Portfolio Health | Concentration Bars ──────────
+    _phc, _concc = st.columns([1, 1])
+
+    with _phc:
+        st.markdown("**Portfolio Health**")
+        if positions:
+            _ph_trend_s  = "WEAK" if _ov_pct is not None and _ov_pct < 0 else (
+                           "EXTENDED" if _ov_pct is not None and _ov_pct > 15 else "NORMAL")
+            _ph_conc_max = max((p["weight"] for p in positions), default=0)
+            _ph_conc_s   = "HIGH" if _ph_conc_max > 50 else "MODERATE" if _ph_conc_max > 30 else "GOOD"
+            _ph_stop_n   = sum(1 for a in danger_alerts if "STOP" in a.get("type","").upper())
+            _ph_stop_s   = f"{_ph_stop_n} BREACH" if _ph_stop_n else "CLEAR"
+            _ph_near_n   = sum(1 for a in warning_alerts if "STOP" in a.get("type","").upper())
+            _ph_liq_s    = "GOOD"
+            _ph_res_s    = "40% TACTICAL"
+
+            def _ph_badge(status, good=("GOOD","CLEAR","NORMAL"), warn=("MODERATE","NEAR STOP","EXTENDED")):
+                if any(g in status for g in good):
+                    return f'<span class="ov-hbadge" style="background:#eaf7ed;color:#216c30">{status}</span>'
+                elif any(w in status for w in warn) or status.endswith("STOP"):
+                    return f'<span class="ov-hbadge" style="background:#fff6dd;color:#92400e">{status}</span>'
+                else:
+                    return f'<span class="ov-hbadge" style="background:#feecec;color:#a92e2e">{status}</span>'
+
+            _ph_rows = [
+                ("Trend",           _ph_trend_s),
+                ("Concentration",   _ph_conc_s + f" ({_ph_conc_max:.0f}% top position)"),
+                ("Liquidity",       _ph_liq_s),
+                ("Stops",           _ph_stop_s + (f" · {_ph_near_n} near" if _ph_near_n else "")),
+                ("Capital Reserve", _ph_res_s),
+            ]
+            _ph_html = '<div class="ov-health">'
+            for _dim, _val in _ph_rows:
+                _ph_html += (
+                    f'<div class="ov-hdim">'
+                    f'<span style="color:#374151;font-weight:600">{_dim}</span>'
+                    f'{_ph_badge(_val)}'
+                    f'</div>'
+                )
+            _ph_html += '</div>'
+            st.markdown(_ph_html, unsafe_allow_html=True)
+        else:
+            st.caption("No positions to evaluate")
+
+    with _concc:
+        st.markdown("**Portfolio Concentration**")
+        if positions:
+            _conc_sorted = sorted(positions, key=lambda p: p["weight"], reverse=True)
+            _conc_html = ""
+            for _cp in _conc_sorted:
+                _cw = _cp["weight"]
+                _cc = ("#a92e2e" if _cw > 50 else "#c05621" if _cw > 30 else
+                       "#2563eb" if _cw > 15 else "#374151")
+                _cbg = ("#feecec" if _cw > 50 else "#fff0e6" if _cw > 30 else
+                        "#eff6ff" if _cw > 15 else "#f3f4f6")
+                _conc_html += (
+                    f'<div class="ov-conc-row">'
+                    f'<div class="ov-conc-meta">'
+                    f'<span>{_cp["ticker"]}'
+                    f'<span style="font-size:10px;color:#9ca3af;font-weight:400;margin-left:6px">{_cp["sector"]}</span>'
+                    f'</span>'
+                    f'<span class="ov-conc-pct" style="color:{_cc};font-weight:700">{_cw:.1f}%</span>'
+                    f'</div>'
+                    f'<div class="ov-conc-trk">'
+                    f'<div class="ov-conc-fill" style="width:{min(_cw,100):.1f}%;background:{_cc}"></div>'
+                    f'</div></div>'
+                )
+            # Concentration threshold reference lines hint
+            _conc_html += (
+                '<div style="display:flex;gap:10px;margin-top:8px;font-size:10px;color:#9ca3af">'
+                '<span style="color:#a92e2e">■ >50% high</span>'
+                '<span style="color:#c05621">■ >30% moderate</span>'
+                '<span style="color:#2563eb">■ >15% watch</span>'
+                '</div>'
+            )
+            st.markdown(_conc_html, unsafe_allow_html=True)
         else:
             st.caption("No active positions")
 
