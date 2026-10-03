@@ -7,6 +7,18 @@ Runs after price_sync.py via GitHub Actions. Checks:
   2. Thesis-threatening news (unverified)
   3. Overdue review dates
   4. Unverified material announcements
+  5. Intraday move > ALERT_INTRADAY_MOVE_PCT (WARNING/DANGER)
+  6. Volume spike > ALERT_VOLUME_SPIKE_MULT × 20-day avg (INFO/WARNING)
+  7. Price within ALERT_52W_HIGH/LOW_PROXIMITY_PCT of 52-week range
+
+Data hierarchy (failsafe — each layer used only when the previous is
+insufficient):
+  1st  daily_snapshots (Supabase) — OHLCV history already stored; one
+       bulk query for all tickers, no external calls.
+  2nd  yfinance fast_info — single ticker call, gives year_high/year_low
+       and three_month_average_volume; used only when Supabase history
+       is too short (< ALERT_52W_MIN_ROWS rows).
+  3rd  Skip gracefully — log warning, never crash the run.
 
 Notifications are sent via email (Gmail SMTP).
 Requires GitHub secrets: ALERT_EMAIL_TO, GMAIL_APP_PASSWORD
@@ -25,10 +37,11 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 
 from supabase import create_client
+import config as cfg
 
 SUPABASE_URL = "https://egfsjboyzajyemjqazot.supabase.co"
 
-# Alert thresholds
+# Stop-loss thresholds (kept here — position-specific, not in config)
 STOP_DANGER_PCT = 3.0
 STOP_WARNING_PCT = 7.0
 ALERT_COOLDOWN_HOURS = 6
@@ -89,11 +102,199 @@ def build_price_map(stocks):
     return price_map
 
 
-def check_alerts(positions, price_map, news):
+def load_snapshots(sb, tickers):
+    """Bulk-fetch daily_snapshots for all tickers in one query.
+
+    Returns {ticker: [rows ordered date DESC]} where each row has
+    open_price, close_price, volume. Rows are ordered newest-first so
+    callers can slice with [:N] for a rolling window.
     """
-    Check all active positions and return list of alerts.
+    if not tickers:
+        return {}
+    try:
+        rows = (
+            sb.table("daily_snapshots")
+            .select("ticker, date, open_price, close_price, volume")
+            .in_("ticker", list(tickers))
+            .order("date", desc=True)
+            .limit(300 * len(tickers))   # ~1yr per ticker in one round trip
+            .execute()
+        ).data or []
+    except Exception as e:
+        print(f"  ⚠ load_snapshots failed: {e} — market-data checks skipped")
+        return {}
+
+    by_ticker = {}
+    for r in rows:
+        t = r.get("ticker")
+        if t:
+            by_ticker.setdefault(t, []).append(r)
+    return by_ticker
+
+
+def _yf_fallback(ticker):
+    """Fetch year_high, year_low, avg_volume from yfinance fast_info.
+
+    Returns dict or None on any failure — callers must handle None.
+    """
+    try:
+        import yfinance as yf
+        symbol = f"{ticker}.NS"
+        fi = yf.Ticker(symbol).fast_info
+        return {
+            "year_high": fi.get("year_high"),
+            "year_low":  fi.get("year_low"),
+            "avg_volume": fi.get("three_month_average_volume"),
+            "source": "yfinance",
+        }
+    except Exception as e:
+        print(f"  ⚠ yfinance fallback failed for {ticker}: {e}")
+        return None
+
+
+def check_intraday_move(ticker, price_map, snapshots):
+    """Return alert if today's intraday move exceeds threshold.
+
+    Uses today's open_price from snapshots (most recent row). Falls
+    back to price_map entry price if no snapshot open is available.
+    """
+    cmp = price_map.get(ticker)
+    if not cmp:
+        return None
+
+    rows = snapshots.get(ticker, [])
+    open_price = None
+    if rows:
+        open_price = _f(rows[0].get("open_price"))   # latest row = today
+
+    if not open_price or open_price <= 0:
+        return None
+
+    move_pct = (cmp - open_price) / open_price * 100
+    abs_move = abs(move_pct)
+    if abs_move < cfg.ALERT_INTRADAY_MOVE_PCT:
+        return None
+
+    direction = "up" if move_pct > 0 else "down"
+    level = "DANGER" if abs_move >= cfg.ALERT_INTRADAY_MOVE_PCT * 1.5 else "WARNING"
+    return {
+        "ticker": ticker,
+        "level": level,
+        "reason": "intraday_move",
+        "detail": (
+            f"Intraday move {move_pct:+.1f}% ({direction}) from open ₹{open_price:,.1f} "
+            f"→ CMP ₹{cmp:,.1f}"
+        ),
+    }
+
+
+def check_volume_spike(ticker, snapshots):
+    """Return alert if today's volume is a spike vs rolling average.
+
+    Uses daily_snapshots rows. Needs at least ALERT_VOLUME_AVG_DAYS + 1
+    rows (today + history). Skips silently if data is insufficient.
+    """
+    rows = snapshots.get(ticker, [])
+    if len(rows) < cfg.ALERT_VOLUME_AVG_DAYS + 1:
+        return None
+
+    today_vol = _f(rows[0].get("volume"))
+    if not today_vol:
+        return None
+
+    # rows[1:] = historical rows (exclude today)
+    hist_vols = [_f(r.get("volume")) for r in rows[1: cfg.ALERT_VOLUME_AVG_DAYS + 1]]
+    hist_vols = [v for v in hist_vols if v and v > 0]
+    if not hist_vols:
+        return None
+
+    avg_vol = sum(hist_vols) / len(hist_vols)
+    if avg_vol <= 0:
+        return None
+
+    mult = today_vol / avg_vol
+    if mult < cfg.ALERT_VOLUME_SPIKE_MULT:
+        return None
+
+    level = "DANGER" if mult >= cfg.ALERT_VOLUME_SPIKE_MULT * 1.5 else "WARNING"
+    return {
+        "ticker": ticker,
+        "level": level,
+        "reason": "volume_spike",
+        "detail": (
+            f"Volume spike: {mult:.1f}× avg ({int(today_vol):,} vs "
+            f"{int(avg_vol):,} avg over {len(hist_vols)}d)"
+        ),
+    }
+
+
+def check_52w_proximity(ticker, price_map, snapshots):
+    """Return alert(s) if price is near the 52-week high or low.
+
+    Primary: compute from daily_snapshots (up to 252 rows).
+    Fallback: yfinance fast_info when history is too short.
+    Returns a list (may have 0, 1 or 2 alerts — high + low simultaneously).
+    """
+    cmp = price_map.get(ticker)
+    if not cmp:
+        return []
+
+    rows = snapshots.get(ticker, [])
+    week52_high = week52_low = None
+
+    if len(rows) >= cfg.ALERT_52W_MIN_ROWS:
+        closes = [_f(r.get("close_price")) for r in rows[:252]]
+        closes = [c for c in closes if c and c > 0]
+        if closes:
+            week52_high = max(closes)
+            week52_low  = min(closes)
+    else:
+        fb = _yf_fallback(ticker)
+        if fb:
+            week52_high = fb.get("year_high")
+            week52_low  = fb.get("year_low")
+
+    alerts = []
+
+    if week52_high and week52_high > 0:
+        pct_from_high = (week52_high - cmp) / week52_high * 100
+        if 0 <= pct_from_high <= cfg.ALERT_52W_HIGH_PROXIMITY_PCT:
+            alerts.append({
+                "ticker": ticker,
+                "level": "INFO",
+                "reason": "near_52w_high",
+                "detail": (
+                    f"Near 52-week high: CMP ₹{cmp:,.1f} is {pct_from_high:.1f}% "
+                    f"below 52w high of ₹{week52_high:,.1f}"
+                ),
+            })
+
+    if week52_low and week52_low > 0:
+        pct_from_low = (cmp - week52_low) / week52_low * 100
+        if 0 <= pct_from_low <= cfg.ALERT_52W_LOW_PROXIMITY_PCT:
+            alerts.append({
+                "ticker": ticker,
+                "level": "DANGER",
+                "reason": "near_52w_low",
+                "detail": (
+                    f"Near 52-week low: CMP ₹{cmp:,.1f} is only {pct_from_low:.1f}% "
+                    f"above 52w low of ₹{week52_low:,.1f}"
+                ),
+            })
+
+    return alerts
+
+
+def check_alerts(positions, price_map, news, snapshots=None):
+    """Check all active positions and return list of alerts.
+
+    snapshots: {ticker: [rows]} from load_snapshots(). Pass None to
+    skip market-data checks (backwards-compatible with existing callers).
     Each alert: {ticker, level, reason, detail}
     """
+    if snapshots is None:
+        snapshots = {}
+
     alerts = []
 
     for p in positions:
@@ -166,6 +367,19 @@ def check_alerts(positions, price_map, news):
                 "detail": f"{len(mat_unverified)} unverified material alert(s) — "
                           f"latest: {mat_unverified[0].get('headline', '')[:60]}",
             })
+
+        # 5. Intraday move
+        intraday = check_intraday_move(ticker, price_map, snapshots)
+        if intraday:
+            alerts.append(intraday)
+
+        # 6. Volume spike
+        vol_spike = check_volume_spike(ticker, snapshots)
+        if vol_spike:
+            alerts.append(vol_spike)
+
+        # 7. 52-week proximity (returns list — can be 0, 1, or 2 alerts)
+        alerts.extend(check_52w_proximity(ticker, price_map, snapshots))
 
     return alerts
 
@@ -302,8 +516,13 @@ def main():
     print(f"Checking {len(positions)} positions "
           f"({len(price_map)} with live prices)")
 
+    # Bulk-load OHLCV history for all active tickers (one DB round trip)
+    active_tickers = [p.get("ticker") for p in positions if p.get("ticker")]
+    snapshots = load_snapshots(sb, active_tickers)
+    print(f"  Snapshots loaded: {len(snapshots)} ticker(s)")
+
     # Find all alerts
-    all_alerts = check_alerts(positions, price_map, news)
+    all_alerts = check_alerts(positions, price_map, news, snapshots)
     print(f"  Raw alerts: {len(all_alerts)}")
 
     if not all_alerts:
