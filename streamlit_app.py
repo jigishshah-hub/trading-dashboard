@@ -2263,6 +2263,10 @@ with tab_positions:
         st.divider()
         if _ps_risk_per > 0 and _ps_entry > 0 and _ps_target > _ps_entry:
             _ps_shares   = int(_ps_risk_amt / _ps_risk_per)
+            # Sync qty to max shares whenever the computed max changes
+            if st.session_state.get("_ps_last_shares") != _ps_shares:
+                st.session_state["ps_qty"] = _ps_shares
+                st.session_state["_ps_last_shares"] = _ps_shares
             _ps_r        = _ps_reward / _ps_risk_per
             _ps_stop_pct = _ps_risk_per / _ps_entry * 100
             _ps_tgt_pct  = _ps_reward / _ps_entry * 100
