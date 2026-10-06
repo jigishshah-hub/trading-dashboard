@@ -2716,6 +2716,7 @@ with tab_cockpit:
 
         _cash_ev = []
         _cb_map = {}
+        _entry_map = {}
         for pm in D["pos"]:
             tid = pm.get("trade_id")
             ep = f(pm.get("entry_price"))
@@ -2726,6 +2727,7 @@ with tab_cockpit:
                 _cb_map[tid] = cb
                 if ed:
                     _cash_ev.append((ed, -cb))
+                    _entry_map[tid] = ed
         for cl in D.get("closed", []):
             tid = cl.get("trade_id")
             exit_date = cl.get("exit_date")
@@ -2751,6 +2753,12 @@ with tab_cockpit:
             pv = f(snap.get("position_value"))
             if tid and sd and pv is not None:
                 if tid in _exit_map and sd >= _exit_map[tid]:
+                    continue
+                # Backfill can land a position's first snapshot a day or two
+                # before its recorded entry_date (sync timing/timezone drift).
+                # Counting stock value before entry debits cash, so exclude it —
+                # mirrors the exit_date exclusion above.
+                if tid in _entry_map and sd < _entry_map[tid]:
                     continue
                 _pos_snap[tid][sd] = pv
 
@@ -4323,6 +4331,7 @@ with tab_perf:
             # Negative = capital deployed (buy), Positive = capital returned (sell)
             cash_events = []
             cost_basis_map = {}  # trade_id -> cost_basis
+            entry_date_map = {}  # trade_id -> entry_date
             for pm in D["pos"]:
                 tid = pm.get("trade_id")
                 ep = f(pm.get("entry_price"))
@@ -4333,6 +4342,7 @@ with tab_perf:
                     cost_basis_map[tid] = cb
                     if ed:
                         cash_events.append((ed, -cb))
+                        entry_date_map[tid] = ed
 
             realized_pnl = 0
             for cl in D.get("closed", []):
@@ -4379,6 +4389,12 @@ with tab_perf:
                 pv = f(snap.get("position_value"))
                 if tid and sd and pv is not None:
                     if tid in exit_date_map and sd >= exit_date_map[tid]:
+                        continue
+                    # Backfill can land a position's first snapshot a day or two
+                    # before its recorded entry_date (sync timing/timezone drift).
+                    # Counting stock value before entry debits cash, so exclude it —
+                    # mirrors the exit_date exclusion above.
+                    if tid in entry_date_map and sd < entry_date_map[tid]:
                         continue
                     pos_snap[tid][sd] = pv
 
