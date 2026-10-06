@@ -4129,12 +4129,26 @@ with tab_perf:
             for t in D["closed"]:
                 ret = f(t.get("realized_return_pct"))
                 hd = f(t.get("holding_period_days"))
+                ep_t = f(t.get("entry_price")) or 0
+                xp_t = f(t.get("exit_price")) or 0
+                # P&L in ₹: use actual lot quantity (handles partial exits correctly).
+                # trade_history has no quantity/realized_pnl column by design (see
+                # Obsidian sync schema) — fall back to % × entry if lots are missing.
+                t_lots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id")]
+                t_qty = sum(f(l.get("qty")) or 0 for l in t_lots)
+                if t_qty > 0:
+                    pnl_rs = (xp_t - ep_t) * t_qty
+                elif ret is not None:
+                    pnl_rs = ep_t * (ret / 100)
+                else:
+                    pnl_rs = None
                 closed_rows.append({
                     "Result": "Win" if (ret or 0) >= 0 else "Loss",
                     "Ticker": t.get("ticker", ""), "Sleeve": t.get("sleeve", ""),
                     "Setup": setup_by_tid.get(t.get("trade_id"), ""),
-                    "Entry": f(t.get("entry_price")), "Exit": f(t.get("exit_price")),
+                    "Entry": ep_t, "Exit": xp_t,
                     "Return %": round(ret, 1) if ret is not None else None,
+                    "P&L (₹)": round(pnl_rs) if pnl_rs is not None else None,
                     "Exit Reason": t.get("exit_reason", ""),
                     "Hold (d)": int(hd) if hd is not None else None,
                     "Exit Date": t.get("exit_date"),
@@ -4144,6 +4158,7 @@ with tab_perf:
                 df_closed, use_container_width=True, hide_index=True, height=360,
                 column_config={
                     "Return %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "P&L (₹)": st.column_config.NumberColumn(format="₹%.0f"),
                     "Entry": st.column_config.NumberColumn(format="₹%.0f"),
                     "Exit": st.column_config.NumberColumn(format="₹%.0f"),
                 })
