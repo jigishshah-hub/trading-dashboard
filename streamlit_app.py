@@ -978,7 +978,10 @@ for t in D["closed"]:
         # P&L = entry_cost * return_pct / 100
         # But we don't have qty in trade_history directly
         # Use lots to find qty for this trade
-        trade_lots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id")]
+        # Only count exit-type lots: lots holds both the entry row(s) and the
+        # exit row(s) for a closed trade, so summing qty over ALL rows double-
+        # counts (entry_qty + exit_qty == 2x shares actually traded).
+        trade_lots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id") and l.get("lot_type") == "exit"]
         trade_qty = sum(f(l.get("qty")) or 0 for l in trade_lots)
         if trade_qty > 0:
             realized_pnl += (xp - ep) * trade_qty
@@ -4077,7 +4080,9 @@ with tab_perf:
                 tk = t.get("ticker", "")
                 ep = f(t.get("entry_price")) or 0
                 xp = f(t.get("exit_price")) or 0
-                tlots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id")]
+                # exit-type lots only — see realized_pnl note above (lots holds
+                # both entry and exit rows; summing all double-counts qty).
+                tlots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id") and l.get("lot_type") == "exit"]
                 tqty = sum(f(l.get("qty")) or 0 for l in tlots)
                 if tqty > 0:
                     pnl_v = (xp - ep) * tqty
@@ -4134,7 +4139,9 @@ with tab_perf:
                 # P&L in ₹: use actual lot quantity (handles partial exits correctly).
                 # trade_history has no quantity/realized_pnl column by design (see
                 # Obsidian sync schema) — fall back to % × entry if lots are missing.
-                t_lots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id")]
+                # exit-type lots only — see realized_pnl note above (lots holds
+                # both entry and exit rows; summing all double-counts qty).
+                t_lots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id") and l.get("lot_type") == "exit"]
                 t_qty = sum(f(l.get("qty")) or 0 for l in t_lots)
                 if t_qty > 0:
                     pnl_rs = (xp_t - ep_t) * t_qty
@@ -4226,7 +4233,9 @@ with tab_perf:
         sl = t.get("sleeve", "Unknown")
         ep = f(t.get("entry_price")) or 0
         xp = f(t.get("exit_price")) or 0
-        trade_lots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id")]
+        # exit-type lots only — see realized_pnl note above (lots holds
+        # both entry and exit rows; summing all double-counts qty).
+        trade_lots = [l for l in D["lots"] if l.get("trade_id") == t.get("trade_id") and l.get("lot_type") == "exit"]
         trade_qty = sum(f(l.get("qty")) or 0 for l in trade_lots)
         if trade_qty > 0:
             sleeve_pnl[sl] = sleeve_pnl.get(sl, 0) + (xp - ep) * trade_qty
