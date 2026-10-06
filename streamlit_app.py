@@ -753,11 +753,21 @@ for s in D["stocks"]:
         if is_fresh:
             price_map[s["ticker"]] = float(cp)
 
-# Override with live yfinance prices during market hours
-if _is_nse_market_hours():
+# Override with live yfinance prices during market hours (best-effort: Yahoo can
+# rate-limit cloud IPs; on failure we keep the Screener close. The counters below
+# surface whether the live layer actually worked — see System & Data.)
+live_override_attempted = _is_nse_market_hours()
+live_override_total = 0
+live_override_count = 0
+live_override_ts = None
+if live_override_attempted:
     active_tickers = tuple(sorted(set(p.get("ticker") for p in active if p.get("ticker"))))
+    live_override_total = len(active_tickers)
     live_prices = fetch_live_prices(active_tickers)
+    live_override_count = len(live_prices)
     price_map.update(live_prices)
+    if live_prices:
+        live_override_ts = datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
 # ── Helpers ─────────────────────────────────────────────────
 def f(v):
@@ -4745,10 +4755,28 @@ with tab_system:
 
     ds1, ds2, ds3 = st.columns(3)
     with ds1:
-        if has_live:
+        _pus = [s.get("price_updated_at") for s in D["stocks"] if s.get("price_updated_at")]
+        _fresh = None
+        if _pus:
+            try:
+                _fresh = max(datetime.fromisoformat(str(x).replace("Z","+00:00")) for x in _pus)
+            except Exception:
+                _fresh = None
+        if has_live and _fresh is not None:
+            _age_min = (datetime.now(timezone.utc) - _fresh).total_seconds()/60
+            _ist = _fresh.astimezone(timezone(timedelta(hours=5,minutes=30)))
+            st.success(f"**Prices** — ✅ {len(price_map)} tickers\n\nScreener feed: {_ist:%d %b %H:%M} IST · {_age_min:.0f} min ago")
+        elif has_live:
             st.success(f"**Prices** — ✅ Connected ({len(price_map)} tickers)")
         else:
             st.warning("**Prices** — ⚠️ No fresh prices")
+        if live_override_attempted and live_override_count > 0:
+            _lt = f" @ {live_override_ts:%H:%M}" if live_override_ts else ""
+            st.caption(f"🟢 Yahoo live override: {live_override_count}/{live_override_total} tickers{_lt}")
+        elif live_override_attempted:
+            st.caption(f"🟡 Yahoo live override: 0/{live_override_total} — Yahoo unreachable, using Screener close")
+        else:
+            st.caption("⚪ Yahoo live override: off (outside market hours) — showing last close")
     with ds2:
         fund_count = len(D["fundsnap"])
         if fund_count > 0:
@@ -4769,7 +4797,7 @@ with tab_system:
 
     auto_rows = [
         {"Feed / Job": "Market prices", "Status": "✅ Healthy" if has_live else "⚠️ Pending",
-         "Last Update": short_date(D["stocks"][0].get("price_updated_at")) if D["stocks"] and D["stocks"][0].get("price_updated_at") else "—",
+         "Last Update": (f"{_fresh.astimezone(timezone(timedelta(hours=5, minutes=30))):%d %b %H:%M} IST" if _fresh else "—"),
          "Cadence": "Every 30 min (market hours)", "Failure Action": "Alert"},
         {"Feed / Job": "Portfolio transactions", "Status": "✅ Healthy",
          "Last Update": "Live from Supabase", "Cadence": "On change", "Failure Action": "Alert"},
