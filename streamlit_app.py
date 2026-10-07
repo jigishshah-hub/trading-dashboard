@@ -4355,21 +4355,38 @@ with tab_perf:
 
             # Build cash flow events: (date, amount)
             # Negative = capital deployed (buy), Positive = capital returned (sell)
+            #
+            # Ledger is built directly from the `lots` table — every entry lot
+            # is a debit, every exit lot is a credit, regardless of whether the
+            # parent trade is still open (partial exit) or fully closed. This
+            # fixes a bug where a partial exit on a still-open position had no
+            # corresponding trade_history row, so its proceeds never entered
+            # the cash ledger — stock value dropped (qty_open shrank) but cash
+            # never rose to offset it, producing a false drop in portfolio
+            # value and an inflated drawdown. See audit notes (2026-10-07).
             cash_events = []
-            cost_basis_map = {}  # trade_id -> cost_basis
-            entry_date_map = {}  # trade_id -> entry_date
-            for pm in D["pos"]:
-                tid = pm.get("trade_id")
-                ep = f(pm.get("entry_price"))
-                qty = f(pm.get("quantity"))
-                ed = pm.get("entry_date")
-                if tid and ep and qty:
-                    cb = ep * qty
-                    cost_basis_map[tid] = cb
-                    if ed:
-                        cash_events.append((ed, -cb))
-                        entry_date_map[tid] = ed
+            entry_date_map = {}  # trade_id -> first entry_date (for snapshot exclusion below)
+            cost_basis_map = {}  # trade_id -> total cost basis (for realized_pnl calc)
+            for lot in D["lots"]:
+                tid = lot.get("trade_id")
+                lt = lot.get("lot_type")
+                ld = lot.get("lot_date")
+                qty = f(lot.get("qty"))
+                price = f(lot.get("price"))
+                if not (tid and ld and qty and price is not None):
+                    continue
+                if lt == "entry":
+                    cb = qty * price
+                    cash_events.append((ld, -cb))
+                    cost_basis_map[tid] = cost_basis_map.get(tid, 0) + cb
+                    if tid not in entry_date_map or ld < entry_date_map[tid]:
+                        entry_date_map[tid] = ld
+                elif lt == "exit":
+                    cash_events.append((ld, qty * price))
 
+            # Realized P&L for this block only (closed trades) — the
+            # authoritative, exit-lot-only realized_pnl KPI is computed
+            # separately near the top of the file.
             realized_pnl = 0
             for cl in D.get("closed", []):
                 tid = cl.get("trade_id")
@@ -4379,9 +4396,7 @@ with tab_perf:
                     qty_pm = next((p for p in D["pos"] if p["trade_id"] == tid), None)
                     qty = f(qty_pm.get("quantity")) if qty_pm else None
                     if qty:
-                        proceeds = exit_price * qty
-                        cash_events.append((exit_date, proceeds))
-                        realized_pnl += proceeds - cost_basis_map[tid]
+                        realized_pnl += (exit_price * qty) - cost_basis_map[tid]
 
             cash_events.sort()
 
