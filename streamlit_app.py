@@ -2717,29 +2717,27 @@ with tab_cockpit:
             if tid and exd:
                 _exit_map[tid] = exd
 
+        # Ledger built directly from `lots` — every entry lot is a debit,
+        # every exit lot is a credit, regardless of whether the parent trade
+        # is still open (partial exit) or fully closed. See the identical,
+        # fully-commented version in the Performance tab's equity-curve
+        # block for the full rationale. (2026-10-07)
         _cash_ev = []
-        _cb_map = {}
         _entry_map = {}
-        for pm in D["pos"]:
-            tid = pm.get("trade_id")
-            ep = f(pm.get("entry_price"))
-            qty = f(pm.get("quantity"))
-            ed = pm.get("entry_date")
-            if tid and ep and qty:
-                cb = ep * qty
-                _cb_map[tid] = cb
-                if ed:
-                    _cash_ev.append((ed, -cb))
-                    _entry_map[tid] = ed
-        for cl in D.get("closed", []):
-            tid = cl.get("trade_id")
-            exit_date = cl.get("exit_date")
-            exit_price = f(cl.get("exit_price"))
-            if tid in _cb_map and exit_date and exit_price:
-                qty_pm = next((p for p in D["pos"] if p["trade_id"] == tid), None)
-                qty = f(qty_pm.get("quantity")) if qty_pm else None
-                if qty:
-                    _cash_ev.append((exit_date, exit_price * qty))
+        for lot in D["lots"]:
+            tid = lot.get("trade_id")
+            lt = lot.get("lot_type")
+            ld = lot.get("lot_date")
+            qty = f(lot.get("qty"))
+            price = f(lot.get("price"))
+            if not (tid and ld and qty and price is not None):
+                continue
+            if lt == "entry":
+                _cash_ev.append((ld, -qty * price))
+                if tid not in _entry_map or ld < _entry_map[tid]:
+                    _entry_map[tid] = ld
+            elif lt == "exit":
+                _cash_ev.append((ld, qty * price))
         _cash_ev.sort()
 
         cum = 0
