@@ -2846,7 +2846,7 @@ with tab_cockpit:
         fig_equity.add_trace(go.Scatter(
             x=[curve_dates[-1]], y=[curve_values[-1]],
             mode='markers', name=f'Today ({fmt(curve_values[-1])})',
-            marker=dict(size=10, color=GREEN if curve_values[-1] >= _init_cap else RED, symbol='diamond'),
+            marker=dict(size=10, color=GREEN if curve_values[-1] >= _eq["init_cap"] else RED, symbol='diamond'),
             hovertemplate='Today<br>Value: ₹%{y:,.0f}<extra></extra>',
         ))
         fig_equity.update_layout(
