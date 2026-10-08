@@ -883,6 +883,121 @@ def review_urgency(review_date):
         return ""
 
 # ── Compute enriched positions ──────────────────────────────
+def compute_equity_curve(D, positions, f):
+    """Single source of truth for the portfolio equity curve: cash ledger
+    (built from `lots` — every entry lot is a debit, every exit lot is a
+    credit, regardless of whether the parent trade is still open) plus
+    stock value (from daily_snapshots, carried forward over gaps).
+
+    Consolidated 2026-10-08 — this used to be copy-pasted independently
+    into the Overview and Performance tabs, which let the two drift out
+    of sync (the Overview copy kept an older, buggy version that didn't
+    credit partial-exit proceeds, even after the Performance copy was
+    fixed). Both tabs must call this function — never re-inline the
+    ledger logic.
+
+    Returns None if there are no snapshots yet (caller should fall back
+    to a simpler lots-only view). Otherwise returns a dict:
+      dates    — sorted list of snapshot date strings, plus today
+      values   — portfolio value (stock + cash) on each date
+      capital  — initial capital deployed, repeated per date (flat line)
+      init_cap — initial capital (max capital ever simultaneously deployed)
+    """
+    from collections import defaultdict
+
+    snapshots = D.get("snapshots", [])
+    if not snapshots:
+        return None
+
+    exit_map = {}
+    for cl in D.get("closed", []):
+        tid = cl.get("trade_id")
+        exd = cl.get("exit_date")
+        if tid and exd:
+            exit_map[tid] = exd
+
+    cash_events = []
+    entry_map = {}
+    for lot in D["lots"]:
+        tid = lot.get("trade_id")
+        lt = lot.get("lot_type")
+        ld = lot.get("lot_date")
+        qty = f(lot.get("qty"))
+        price = f(lot.get("price"))
+        if not (tid and ld and qty and price is not None):
+            continue
+        if lt == "entry":
+            cash_events.append((ld, -qty * price))
+            if tid not in entry_map or ld < entry_map[tid]:
+                entry_map[tid] = ld
+        elif lt == "exit":
+            cash_events.append((ld, qty * price))
+    cash_events.sort()
+
+    cum = 0
+    min_cum = 0
+    for _, amt in cash_events:
+        cum += amt
+        min_cum = min(min_cum, cum)
+    init_cap = -min_cum if min_cum < 0 else 0
+
+    # Per-position snapshots with carry-forward for missing dates, and
+    # exclusion of snapshot rows outside [entry_date, exit_date) — see
+    # the two notes this used to carry at each duplicated call site.
+    pos_snap = defaultdict(dict)
+    for snap in snapshots:
+        tid = snap.get("trade_id")
+        sd = snap.get("snapshot_date")
+        pv = f(snap.get("position_value"))
+        if tid and sd and pv is not None:
+            if tid in exit_map and sd >= exit_map[tid]:
+                continue
+            if tid in entry_map and sd < entry_map[tid]:
+                continue
+            pos_snap[tid][sd] = pv
+
+    all_dates = sorted(
+        set().union(*(d.keys() for d in pos_snap.values())) if pos_snap else []
+    )
+
+    last_val = {}
+    daily_stock = {}
+    for d in all_dates:
+        total = 0
+        for tid, dv in pos_snap.items():
+            if d in dv:
+                last_val[tid] = dv[d]
+                total += dv[d]
+            elif tid in last_val and (tid not in exit_map or d < exit_map[tid]):
+                total += last_val[tid]
+        daily_stock[d] = total
+
+    dates = list(all_dates)
+    values = []
+    for d in dates:
+        stock = daily_stock[d]
+        cash = init_cap + sum(amt for ed, amt in cash_events if ed <= d)
+        values.append(stock + cash)
+    capital = [init_cap] * len(dates)
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    active_stock = sum(p["current_value"] for p in positions)
+    today_cash = init_cap + sum(amt for _, amt in cash_events)
+    today_value = active_stock + today_cash
+    if today_str not in set(dates):
+        dates.append(today_str)
+        values.append(today_value)
+        capital.append(init_cap)
+    else:
+        idx = dates.index(today_str)
+        values[idx] = today_value
+
+    return {
+        "dates": dates, "values": values, "capital": capital, "init_cap": init_cap,
+        "today_cash": today_cash, "active_stock": active_stock,
+    }
+
+
 positions = []
 for p in active:
     ticker = p.get("ticker")
@@ -2708,100 +2823,11 @@ with tab_cockpit:
     snapshots = D.get("snapshots", [])
     all_lots = sorted(D["lots"], key=lambda l: l.get("lot_date") or "9999")
 
-    if snapshots:
-        from collections import defaultdict
-        _exit_map = {}
-        for cl in D.get("closed", []):
-            tid = cl.get("trade_id")
-            exd = cl.get("exit_date")
-            if tid and exd:
-                _exit_map[tid] = exd
+    _eq = compute_equity_curve(D, positions, f)
 
-        # Ledger built directly from `lots` — every entry lot is a debit,
-        # every exit lot is a credit, regardless of whether the parent trade
-        # is still open (partial exit) or fully closed. See the identical,
-        # fully-commented version in the Performance tab's equity-curve
-        # block for the full rationale. (2026-10-07)
-        _cash_ev = []
-        _entry_map = {}
-        for lot in D["lots"]:
-            tid = lot.get("trade_id")
-            lt = lot.get("lot_type")
-            ld = lot.get("lot_date")
-            qty = f(lot.get("qty"))
-            price = f(lot.get("price"))
-            if not (tid and ld and qty and price is not None):
-                continue
-            if lt == "entry":
-                _cash_ev.append((ld, -qty * price))
-                if tid not in _entry_map or ld < _entry_map[tid]:
-                    _entry_map[tid] = ld
-            elif lt == "exit":
-                _cash_ev.append((ld, qty * price))
-        _cash_ev.sort()
-
-        cum = 0
-        min_cum = 0
-        for _, amt in _cash_ev:
-            cum += amt
-            min_cum = min(min_cum, cum)
-        _init_cap = -min_cum if min_cum < 0 else 0
-
-        _pos_snap = defaultdict(dict)
-        for snap in snapshots:
-            tid = snap.get("trade_id")
-            sd = snap.get("snapshot_date")
-            pv = f(snap.get("position_value"))
-            if tid and sd and pv is not None:
-                if tid in _exit_map and sd >= _exit_map[tid]:
-                    continue
-                # Backfill can land a position's first snapshot a day or two
-                # before its recorded entry_date (sync timing/timezone drift).
-                # Counting stock value before entry debits cash, so exclude it —
-                # mirrors the exit_date exclusion above.
-                if tid in _entry_map and sd < _entry_map[tid]:
-                    continue
-                _pos_snap[tid][sd] = pv
-
-        all_dates = sorted(
-            set().union(*(d.keys() for d in _pos_snap.values()))
-            if _pos_snap else []
-        )
-
-        _last = {}
-        _daily_stock = {}
-        for d in all_dates:
-            total = 0
-            for tid, dv in _pos_snap.items():
-                if d in dv:
-                    _last[tid] = dv[d]
-                    total += dv[d]
-                elif tid in _last and (tid not in _exit_map or d < _exit_map[tid]):
-                    total += _last[tid]
-            _daily_stock[d] = total
-
-        curve_dates = list(all_dates)
-        curve_values = []
-        for d in curve_dates:
-            stock = _daily_stock[d]
-            cash = _init_cap + sum(amt for ed, amt in _cash_ev if ed <= d)
-            curve_values.append(stock + cash)
-
-        curve_capital = [_init_cap] * len(curve_dates)
-
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        active_stock_eq = sum(p["current_value"] for p in positions)
-        today_cash_eq = _init_cap + sum(amt for _, amt in _cash_ev)
-        today_portfolio_eq = active_stock_eq + today_cash_eq
-        if today_str not in set(curve_dates):
-            curve_dates.append(today_str)
-            curve_values.append(today_portfolio_eq)
-            curve_capital.append(_init_cap)
-        else:
-            idx = curve_dates.index(today_str)
-            curve_values[idx] = today_portfolio_eq
-
-        st.caption(f"Daily portfolio value vs capital deployed ({len(all_dates)} trading days)")
+    if _eq:
+        curve_dates, curve_values, curve_capital = _eq["dates"], _eq["values"], _eq["capital"]
+        st.caption(f"Daily portfolio value vs capital deployed ({len(curve_dates)} trading days)")
 
         fig_equity = go.Figure()
         fig_equity.add_trace(go.Scatter(
@@ -4341,50 +4367,32 @@ with tab_perf:
         has_snapshots = len(snapshots) > 0
 
         if has_snapshots:
-            # ── Portfolio Value = Stock (open positions) + Cash ──
-            # Cash tracks capital not currently deployed in positions.
-            # Entry → cash decreases by cost basis.
-            # Exit  → cash increases by exit proceeds.
-            # This keeps portfolio value continuous through capital rotation:
-            # when a position exits, stock drops but cash rises by the same
-            # proceeds, so portfolio stays flat (± P&L). When that cash funds
-            # a new position, cash drops but stock rises by the new cost.
-            from collections import defaultdict
-
-            # Build cash flow events: (date, amount)
-            # Negative = capital deployed (buy), Positive = capital returned (sell)
-            #
-            # Ledger is built directly from the `lots` table — every entry lot
-            # is a debit, every exit lot is a credit, regardless of whether the
-            # parent trade is still open (partial exit) or fully closed. This
-            # fixes a bug where a partial exit on a still-open position had no
-            # corresponding trade_history row, so its proceeds never entered
-            # the cash ledger — stock value dropped (qty_open shrank) but cash
-            # never rose to offset it, producing a false drop in portfolio
-            # value and an inflated drawdown. See audit notes (2026-10-07).
-            cash_events = []
-            entry_date_map = {}  # trade_id -> first entry_date (for snapshot exclusion below)
-            cost_basis_map = {}  # trade_id -> total cost basis (for realized_pnl calc)
-            for lot in D["lots"]:
-                tid = lot.get("trade_id")
-                lt = lot.get("lot_type")
-                ld = lot.get("lot_date")
-                qty = f(lot.get("qty"))
-                price = f(lot.get("price"))
-                if not (tid and ld and qty and price is not None):
-                    continue
-                if lt == "entry":
-                    cb = qty * price
-                    cash_events.append((ld, -cb))
-                    cost_basis_map[tid] = cost_basis_map.get(tid, 0) + cb
-                    if tid not in entry_date_map or ld < entry_date_map[tid]:
-                        entry_date_map[tid] = ld
-                elif lt == "exit":
-                    cash_events.append((ld, qty * price))
+            # Portfolio value = stock (daily_snapshots) + cash (lots-based
+            # ledger). See compute_equity_curve's docstring for the full
+            # rationale — this used to be duplicated inline here and in the
+            # Overview tab; both now call the single shared implementation.
+            _eq = compute_equity_curve(D, positions, f)
+            sorted_dates = _eq["dates"]
+            daily_portfolio = _eq["values"]
+            initial_capital = _eq["init_cap"]
+            today_portfolio = _eq["values"][-1]
+            today_cash = _eq["today_cash"]
+            active_stock = _eq["active_stock"]
 
             # Realized P&L for this block only (closed trades) — the
             # authoritative, exit-lot-only realized_pnl KPI is computed
-            # separately near the top of the file.
+            # separately near the top of the file. Cost basis here is
+            # rebuilt from entry lots (not part of the shared ledger fn,
+            # which only needs cash events, not a per-trade cost map).
+            cost_basis_map = {}
+            for lot in D["lots"]:
+                if lot.get("lot_type") == "entry":
+                    tid = lot.get("trade_id")
+                    qty = f(lot.get("qty"))
+                    price = f(lot.get("price"))
+                    if tid and qty and price is not None:
+                        cost_basis_map[tid] = cost_basis_map.get(tid, 0) + qty * price
+
             realized_pnl = 0
             for cl in D.get("closed", []):
                 tid = cl.get("trade_id")
@@ -4395,86 +4403,6 @@ with tab_perf:
                     qty = f(qty_pm.get("quantity")) if qty_pm else None
                     if qty:
                         realized_pnl += (exit_price * qty) - cost_basis_map[tid]
-
-            cash_events.sort()
-
-            # Initial capital = enough so cash never goes negative
-            # (= maximum capital simultaneously deployed at any point)
-            cum = 0
-            min_cum = 0
-            for _, amt in cash_events:
-                cum += amt
-                min_cum = min(min_cum, cum)
-            initial_capital = -min_cum if min_cum < 0 else 0
-
-            # Build exit date lookup to filter out post-exit snapshots.
-            # The backfill script fetches data through today for ALL positions
-            # (including exited), so snapshots exist after exit — exclude them.
-            exit_date_map = {}
-            for cl in D.get("closed", []):
-                tid = cl.get("trade_id")
-                exd = cl.get("exit_date")
-                if tid and exd:
-                    exit_date_map[tid] = exd
-
-            # Per-position snapshots with carry-forward for missing dates.
-            # yfinance may not return data for every position on every date
-            # (partial trading days, data gaps). Carry forward last known
-            # value so a missing snapshot doesn't zero out a position.
-            pos_snap = defaultdict(dict)
-            for snap in snapshots:
-                tid = snap.get("trade_id")
-                sd = snap.get("snapshot_date")
-                pv = f(snap.get("position_value"))
-                if tid and sd and pv is not None:
-                    if tid in exit_date_map and sd >= exit_date_map[tid]:
-                        continue
-                    # Backfill can land a position's first snapshot a day or two
-                    # before its recorded entry_date (sync timing/timezone drift).
-                    # Counting stock value before entry debits cash, so exclude it —
-                    # mirrors the exit_date exclusion above.
-                    if tid in entry_date_map and sd < entry_date_map[tid]:
-                        continue
-                    pos_snap[tid][sd] = pv
-
-            all_snap_dates = sorted(
-                set().union(*(d.keys() for d in pos_snap.values()))
-                if pos_snap else []
-            )
-
-            daily_stock = {}
-            last_val = {}
-            for d in all_snap_dates:
-                total = 0
-                for tid, dv in pos_snap.items():
-                    if d in dv:
-                        last_val[tid] = dv[d]
-                        total += dv[d]
-                    elif tid in last_val and (tid not in exit_date_map or d < exit_date_map[tid]):
-                        total += last_val[tid]
-                daily_stock[d] = total
-
-            # Portfolio(D) = stock(D) + cash(D)
-            # cash(D) = initial_capital + Σ cash_events on or before D
-            sorted_dates = all_snap_dates
-            daily_portfolio = []
-            for d in sorted_dates:
-                stock = daily_stock[d]
-                cash = initial_capital + sum(amt for ed, amt in cash_events if ed <= d)
-                daily_portfolio.append(stock + cash)
-
-            # Add today's live value
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            active_stock = sum(p["current_value"] for p in positions)
-            today_cash = initial_capital + sum(amt for _, amt in cash_events)
-            today_portfolio = active_stock + today_cash
-            if today_str not in set(sorted_dates):
-                sorted_dates = list(sorted_dates) + [today_str]
-                daily_portfolio.append(today_portfolio)
-            else:
-                # Replace snapshot-date value with live
-                idx = sorted_dates.index(today_str)
-                daily_portfolio[idx] = today_portfolio
 
             # Peak and drawdown
             peak_val = max(daily_portfolio) if daily_portfolio else today_portfolio
