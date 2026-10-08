@@ -169,10 +169,30 @@ def upsert_snapshots(sb, ticker: str, trade_id: str, qty: float, rows: list):
 
 
 def snapshot_today(sb, positions):
-    """Capture today's closing data for all active positions."""
+    """Capture the latest closing data for all active positions.
+
+    Fetches a short trailing window (not just today) because yfinance
+    may not have published today's close yet right after market close,
+    or "today" may be a non-trading day — but only the single most
+    recent row from that window is ever upserted.
+
+    This used to upsert every row in the window, using TODAY's current
+    qty_open for all of them. Since this function runs daily and the
+    window overlapped the last several calendar days every time, any
+    partial exit would retroactively overwrite the prior days' stored
+    position_value with the post-exit quantity — silently understating
+    what was actually held on those earlier dates. Confirmed happening
+    live for ASTRAMICRO (TR-0003) around its 2026-10-05/07 partial
+    exits. Fixed 2026-10-08 — see the architecture doc in the Claude
+    project for the incident. Only ever write the latest trading day
+    from here; use --backfill (with its own date-range handling) for
+    historical data.
+    """
     today = datetime.now().strftime("%Y-%m-%d")
-    # Fetch yesterday too in case market just closed and today isn't in yfinance yet
-    yesterday = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    # Look back a few days to find the latest published close even
+    # across a long weekend/holiday — but only the single most recent
+    # row found is ever upserted (see docstring above).
+    lookback = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
 
     active = [p for p in positions if p.get("status") == "active"]
     if not active:
@@ -189,10 +209,12 @@ def snapshot_today(sb, positions):
         trade_id = pos["trade_id"]
         qty = float(pos.get("qty_open") or pos.get("quantity") or 0)
 
-        rows = fetch_ohlcv(ticker, yesterday, today)
+        rows = fetch_ohlcv(ticker, lookback, today)
         if rows:
-            n = upsert_snapshots(sb, ticker, trade_id, qty, rows)
-            latest = rows[-1]
+            latest_rows = rows[-1:]  # only the most recent trading day —
+                                      # never touch earlier dates from here
+            n = upsert_snapshots(sb, ticker, trade_id, qty, latest_rows)
+            latest = latest_rows[-1]
             print(f"  ✓ {ticker}: ₹{latest['close']:,.2f} (vol {latest['volume']:,}) — {n} rows")
             success += 1
         else:
@@ -201,10 +223,41 @@ def snapshot_today(sb, positions):
     print(f"\nDone. {success} succeeded, {failed} failed.")
 
 
+def get_lots(sb):
+    """Return all lots (trade_id, lot_type, qty, lot_date), for replaying
+    qty_open day-by-day during backfill."""
+    result = sb.table("lots").select("trade_id, lot_type, qty, lot_date").execute()
+    return result.data or []
+
+
+def qty_open_asof(lots_for_trade, date_str):
+    """qty_open for one trade as of the close of `date_str` — every entry
+    lot on or before that date adds its qty, every exit lot subtracts.
+    `lots_for_trade` is this trade's lots, any order."""
+    q = 0.0
+    for lot in lots_for_trade:
+        ld = lot.get("lot_date")
+        if not ld or ld > date_str:
+            continue
+        qty = float(lot.get("qty") or 0)
+        q += qty if lot.get("lot_type") == "entry" else -qty
+    return q
+
+
 def backfill(sb, positions):
     """Pull full history from each position's entry date to exit date (or today
     for active positions).  Exited positions should NOT have snapshots after
-    their exit date — that was the root cause of incorrect drawdown numbers."""
+    their exit date — that was the root cause of incorrect drawdown numbers.
+
+    Replays qty_open day-by-day from the `lots` table rather than applying
+    one scalar qty across the whole range (fixed 2026-10-08 — the old
+    scalar approach corrupted every date before a partial exit with the
+    post-exit qty whenever backfill was run after that exit; confirmed on
+    ACE/TR-0007's entire Sep 9–21 history, repaired via direct SQL — see
+    architecture doc). Rows are grouped into contiguous same-qty chunks
+    (one chunk per interval between lot events) so this still costs one
+    Yahoo Finance fetch per ticker, not one per day.
+    """
     today = datetime.now().strftime("%Y-%m-%d")
 
     if not positions:
@@ -224,6 +277,10 @@ def backfill(sb, positions):
     except Exception as e:
         print(f"  ⚠ Could not load trade_history for exit dates: {e}")
 
+    lots_by_trade = {}
+    for lot in get_lots(sb):
+        lots_by_trade.setdefault(lot.get("trade_id"), []).append(lot)
+
     print(f"Backfilling {len(positions)} positions to {today}")
 
     total_rows = 0
@@ -233,12 +290,6 @@ def backfill(sb, positions):
         trade_id = pos["trade_id"]
         status = pos.get("status", "active")
         entry_date = pos.get("entry_date")
-        qty = float(pos.get("qty_open") or pos.get("quantity") or 0)
-
-        # For exited positions, qty_open is 0 — use original quantity for
-        # historical snapshots (the position was held during that period)
-        if status == "exited" and qty == 0:
-            qty = float(pos.get("quantity") or 0)
 
         if not entry_date:
             # No entry date — try 30 days back as fallback
@@ -253,12 +304,40 @@ def backfill(sb, positions):
         print(f"  → {ticker} ({trade_id}): {entry_date} to {end_date} ...", end=" ")
 
         rows = fetch_ohlcv(ticker, entry_date, end_date)
-        if rows:
-            n = upsert_snapshots(sb, ticker, trade_id, qty, rows)
-            print(f"{n} rows")
-            total_rows += n
-        else:
+        if not rows:
             print("FAILED")
+            continue
+
+        trade_lots = lots_by_trade.get(trade_id, [])
+        if not trade_lots:
+            # No lots on record for this trade — can't replay qty_open.
+            # Fall back to the old scalar behavior rather than silently
+            # zeroing out this position's history.
+            fallback_qty = float(pos.get("qty_open") or pos.get("quantity") or 0)
+            if status == "exited" and fallback_qty == 0:
+                fallback_qty = float(pos.get("quantity") or 0)
+            n = upsert_snapshots(sb, ticker, trade_id, fallback_qty, rows)
+            print(f"{n} rows (no lots found — used flat qty {fallback_qty:g})")
+            total_rows += n
+            continue
+
+        n = 0
+        # Group consecutive rows that share the same historical qty_open
+        # into one upsert call each, instead of a separate call per day.
+        chunk_qty = None
+        chunk_rows = []
+        for row in rows:
+            q = qty_open_asof(trade_lots, row["date"])
+            if chunk_qty is not None and q != chunk_qty and chunk_rows:
+                n += upsert_snapshots(sb, ticker, trade_id, chunk_qty, chunk_rows)
+                chunk_rows = []
+            chunk_qty = q
+            chunk_rows.append(row)
+        if chunk_rows:
+            n += upsert_snapshots(sb, ticker, trade_id, chunk_qty, chunk_rows)
+
+        print(f"{n} rows")
+        total_rows += n
 
     print(f"\nBackfill complete. {total_rows} total rows inserted.")
 
