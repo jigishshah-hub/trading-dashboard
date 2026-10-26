@@ -1,0 +1,34 @@
+name: VTS Real-Data Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      period:
+        description: "Lookback period (yfinance syntax: 5y, 6y)"
+        required: false
+        default: "6y"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install yfinance pandas numpy
+
+      - name: Run backtest on real NSE data
+        run: python vts_backtest_real.py
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: vts-backtest-results
+          path: backtest_results.json
+          retention-days: 30
