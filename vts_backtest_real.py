@@ -136,7 +136,8 @@ def precompute(df: pd.DataFrame, nifty: pd.Series, vix_series: pd.Series) -> pd.
 
 # ── Trade simulation ──────────────────────────────────────────────────────
 
-def simulate(pre: pd.DataFrame, vts_min: float, varb_max: float) -> list[float]:
+def simulate(pre: pd.DataFrame, vts_min: float, varb_max: float, return_dates: bool = False):
+    dates = pre.index
     close = pre["close"].values
     atr   = pre["atr20"].values
     vts   = pre["vts"].values
@@ -146,29 +147,43 @@ def simulate(pre: pd.DataFrame, vts_min: float, varb_max: float) -> list[float]:
     n = len(close)
 
     results, in_trade = [], False
+    entry_dates = [] if return_dates else None
     entry = stop = target1 = 0.0
     hold = 0
+    entry_date = None
 
     for t in range(n - 1):
         if in_trade:
             hold += 1
             p = close[t]
             if p <= stop:
-                results.append(-1.0); in_trade = False
+                results.append(-1.0)
+                if return_dates: entry_dates.append(entry_date)
+                in_trade = False
             elif p >= target1:
                 if close[t] < ema21[t] or hold >= 60:
                     trail_r = (p - entry) / atr[t] if atr[t] > 0 else 0
-                    results.append(0.30 * 2.0 + 0.70 * trail_r); in_trade = False
+                    results.append(0.30 * 2.0 + 0.70 * trail_r)
+                    if return_dates: entry_dates.append(entry_date)
+                    in_trade = False
             elif close[t] < ema21[t] and hold > 10:
-                results.append((p - entry) / atr[t] if atr[t] > 0 else 0); in_trade = False
+                results.append((p - entry) / atr[t] if atr[t] > 0 else 0)
+                if return_dates: entry_dates.append(entry_date)
+                in_trade = False
             elif hold >= 60:
-                results.append((p - entry) / atr[t] if atr[t] > 0 else 0); in_trade = False
+                results.append((p - entry) / atr[t] if atr[t] > 0 else 0)
+                if return_dates: entry_dates.append(entry_date)
+                in_trade = False
         else:
             if vts[t] >= vts_min and varb[t] <= varb_max and r_off[t] == 0 and atr[t] > 0:
                 entry = close[t]; stop = entry - atr[t]
                 target1 = entry + 2 * atr[t]; hold = 0; in_trade = True
+                entry_date = dates[t]
     if in_trade and atr[-1] > 0:
         results.append((close[-1] - entry) / atr[-1])
+        if return_dates: entry_dates.append(entry_date)
+    if return_dates:
+        return results, entry_dates
     return results
 
 
@@ -286,6 +301,35 @@ def main():
             b = sub.iloc[0]
             print(f"  VTS>={vts_min:.0f}: Sortino={b['sortino']:.2f}  WinRate={b['win_rate']:.1%}  "
                   f"N={int(b['n_trades'])}  VARB<={b['varb_max']:.0f}")
+
+    # Year-by-year breakdown for recommended params (VTS>=75, VARB<=10)
+    print("\n-- Year-by-year trade count (VTS>=75, VARB<=10) --")
+    from collections import Counter
+    year_counts: Counter = Counter()
+    year_r: dict = {}
+    for sym, pre in pre_list:
+        p = pre.loc[TRAIN_START:TRAIN_END]
+        if len(p) >= 130:
+            rs, dates = simulate(p, 75, 10, return_dates=True)
+            for r, d in zip(rs, dates):
+                yr = d.year
+                year_counts[yr] += 1
+                year_r.setdefault(yr, []).append(r)
+    # Also OOS
+    for sym, pre in pre_list:
+        p = pre.loc[OOS_START:]
+        if len(p) >= 130:
+            rs, dates = simulate(p, 75, 10, return_dates=True)
+            for r, d in zip(rs, dates):
+                yr = d.year
+                year_counts[yr] += 1
+                year_r.setdefault(yr, []).append(r)
+    for yr in sorted(year_counts.keys()):
+        cnt = year_counts[yr]
+        rs_arr = np.array(year_r[yr])
+        avg_r = rs_arr.mean()
+        wr = (rs_arr > 0).mean()
+        print(f"  {yr}: {cnt:3d} trades  WinRate={wr:.0%}  AvgR={avg_r:+.2f}R")
 
     print("\nDone.")
 
