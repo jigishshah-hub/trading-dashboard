@@ -1,0 +1,45 @@
+name: VTS Daily Scanner
+
+on:
+  # 4:30 PM IST = 11:00 AM UTC. Run Mon-Fri after NSE close.
+  # Jittered to 11:07 to avoid the :00 traffic spike.
+  schedule:
+    - cron: "7 11 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Scan date (yyyy-mm-dd). Leave blank for today."
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run (log only, no Supabase write)"
+        required: false
+        default: "false"
+
+jobs:
+  vts-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements-actions.txt
+
+      - name: Run VTS scanner
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            ARGS="$ARGS --date ${{ github.event.inputs.date }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python vts_scanner.py $ARGS
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
