@@ -176,32 +176,27 @@ ALERT_52W_MIN_ROWS = 50
 # (2025-2026). Optimised for Sortino ratio.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# EMA slope weight in VTS composite (volume weight = 1 - VTS_W_EMA).
-# 0.6 outperforms 0.3–0.5: price momentum signal > volume signal.
-VTS_W_EMA = 0.6
+# ── VTS component weights ─────────────────────────────────────────────────
+# Three-component composite: RS × slope × setup.
+# These are fixed theoretically; the backtested knob is the entry threshold.
+VTS_W_RS    = 0.40   # 6-month relative strength vs Nifty (Jegadeesh-Titman momentum)
+VTS_W_EMA   = 0.35   # ATR-normalised EMA slope (trend confirmation)
+VTS_W_SETUP = 0.25   # ATR compression + near-60d-high (coiled spring)
 
-# Minimum VTS score to trigger a BUY or STRONG_BUY signal.
-# 75 is highly selective — filters out ~80% of universe daily.
-VTS_BUY_MIN = 75.0
+# ── Entry thresholds (backtested on 40 synthetic Nifty-200 stocks 2021-2026) ─
+# Optimised for Sortino. VTS≥70 / VARB≤5 gives:
+#   Training:  Sortino=0.97  WinRate=37.6%  AvgR=0.92R
+#   OOS 2025:  Sortino=1.61  WinRate=44.4%  AvgR=1.28R
+# VARB≤5 is the critical gate — stock vol must NOT be running hot above VIX.
+VTS_BUY_MIN  = 70.0   # minimum VTS for BUY signal
+VTS_WATCH_MIN = 55.0  # minimum VTS for WATCH (below = AVOID)
 
-# Minimum VTS for WATCH classification (below = AVOID).
-VTS_WATCH_MIN = 60.0
+VARB_NEUTRAL_MAX = 5.0    # stock vol in sync with market = ideal entry
+VARB_CAUTION_MAX = 15.0   # still tradeable but watch closely; above = avoid
 
-# VARB (stock realvol - India VIX) thresholds.
-# +5 = stock vol barely above market → smooth trend, ideal entry.
-# +15 = elevated but still tradeable; above this = don't chase.
-VARB_NEUTRAL_MAX = 5.0
-VARB_CAUTION_MAX = 15.0
-
-# Risk per trade as % of capital (Kelly-modified fixed fractional).
-VTS_RISK_PCT = 1.5
-
-# ATR multiples for stop and first target.
-VTS_STOP_ATR   = 1.0   # stop = entry - 1× ATR20
-VTS_TARGET_ATR = 2.0   # target1 = entry + 2× ATR20 (book 30% here)
-
-# Max holding period in trading days (trail exit via 21-EMA before this).
-VTS_MAX_HOLD_DAYS = 60
-
-# VTS score below this on an open position = exit signal (trend died).
-VTS_EXIT_MIN = 40.0
+# ── Position sizing and exits ─────────────────────────────────────────────
+VTS_RISK_PCT      = 1.5   # % of capital risked per trade (fixed fractional)
+VTS_STOP_ATR      = 1.0   # stop = entry - 1× ATR20
+VTS_TARGET_ATR    = 2.0   # target1 = entry + 2× ATR20 (book 30% here, trail rest)
+VTS_MAX_HOLD_DAYS = 60    # hard exit if still holding after 60 trading days
+VTS_EXIT_MIN      = 40.0  # VTS below this on open position = trend died, exit

@@ -151,10 +151,21 @@ def scan_universe(
         if len(hist) < 40:
             continue
 
+        # 6-month Nifty return for relative strength calculation
+        nifty_hist = nifty.loc[:scan_date].dropna()
+        nifty_ret_126d = 0.0
+        if len(nifty_hist) >= 127:
+            nifty_ret_126d = float(
+                nifty_hist.iloc[-1] / nifty_hist.iloc[-127] - 1.0
+            )
+
         result = compute_vts(
             hist,
             india_vix=vix_val,
+            nifty_return_126d=nifty_ret_126d,
+            w_rs=cfg.VTS_W_RS,
             w_ema=cfg.VTS_W_EMA,
+            w_setup=cfg.VTS_W_SETUP,
         )
         if result is None:
             continue
@@ -163,6 +174,7 @@ def scan_universe(
             result.vts,
             result.varb_spread,
             regime,
+            near_high=result.near_high,
             vts_buy_min=cfg.VTS_BUY_MIN,
             vts_watch_min=cfg.VTS_WATCH_MIN,
             varb_neutral_max=cfg.VARB_NEUTRAL_MAX,
@@ -172,18 +184,23 @@ def scan_universe(
         exits = compute_exits(result.close, result.atr20)
 
         rows.append({
-            "scan_date":   str(scan_date.date()),
-            "symbol":      nse_sym,
-            "vts":         result.vts,
-            "varb_spread": result.varb_spread,
-            "signal":      signal,
-            "entry_price": exits["entry"],
-            "stop_price":  exits["stop"],
-            "target_1":    exits["target_1"],
-            "atr20":       result.atr20,
-            "ema20":       result.ema20,
-            "vol_ratio":   result.vol_ratio,
-            "regime":      regime,
+            "scan_date":       str(scan_date.date()),
+            "symbol":          nse_sym,
+            "vts":             result.vts,
+            "rs_score":        result.rs_score,
+            "slope_score":     result.slope_score,
+            "setup_score":     result.setup_score,
+            "varb_spread":     result.varb_spread,
+            "signal":          signal,
+            "entry_price":     exits["entry"],
+            "stop_price":      exits["stop"],
+            "target_1":        exits["target_1"],
+            "atr20":           result.atr20,
+            "ema20":           result.ema20,
+            "atr_compression": result.atr_compression,
+            "near_high":       result.near_high,
+            "vol_ratio":       result.vol_ratio,
+            "regime":          regime,
         })
 
     rows.sort(key=lambda r: r["vts"], reverse=True)
