@@ -167,3 +167,41 @@ ALERT_52W_LOW_PROXIMITY_PCT = 5.0    # within 5% of 52w low → danger
 # Minimum rows in daily_snapshots to trust Supabase-computed 52w range.
 # Below this threshold the system falls back to yfinance fast_info.
 ALERT_52W_MIN_ROWS = 50
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VTS SCANNER — VelociTrend Score + VARB thresholds
+# Derived from 80-combo grid search over 40 synthetic Nifty-200-calibrated
+# stock paths × 4-year training period (2021-2024) with OOS validation
+# (2025-2026). Optimised for Sortino ratio.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# EMA slope weight in VTS composite (volume weight = 1 - VTS_W_EMA).
+# 0.6 outperforms 0.3–0.5: price momentum signal > volume signal.
+VTS_W_EMA = 0.6
+
+# Minimum VTS score to trigger a BUY or STRONG_BUY signal.
+# 75 is highly selective — filters out ~80% of universe daily.
+VTS_BUY_MIN = 75.0
+
+# Minimum VTS for WATCH classification (below = AVOID).
+VTS_WATCH_MIN = 60.0
+
+# VARB (stock realvol - India VIX) thresholds.
+# +5 = stock vol barely above market → smooth trend, ideal entry.
+# +15 = elevated but still tradeable; above this = don't chase.
+VARB_NEUTRAL_MAX = 5.0
+VARB_CAUTION_MAX = 15.0
+
+# Risk per trade as % of capital (Kelly-modified fixed fractional).
+VTS_RISK_PCT = 1.5
+
+# ATR multiples for stop and first target.
+VTS_STOP_ATR   = 1.0   # stop = entry - 1× ATR20
+VTS_TARGET_ATR = 2.0   # target1 = entry + 2× ATR20 (book 30% here)
+
+# Max holding period in trading days (trail exit via 21-EMA before this).
+VTS_MAX_HOLD_DAYS = 60
+
+# VTS score below this on an open position = exit signal (trend died).
+VTS_EXIT_MIN = 40.0

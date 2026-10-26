@@ -37,22 +37,22 @@ prices, stops, and position sizes — all computed without manual input.
 Composite momentum score. Higher = stronger trending momentum.
 
 ```
-Component 1 — EMA Slope (weight 50%)
+Component 1 — EMA Slope (weight 60%)  ← backtested optimal
   slope_raw  = (EMA20_today - EMA20_10days_ago) / EMA20_10days_ago * 100
   slope_norm = clip(slope_raw / ATR20_pct, -3, 3)  # ATR-normalised, [-3,3]
   ema_score  = (slope_norm + 3) / 6 * 100           # rescale to [0, 100]
 
-Component 2 — Volume Momentum (weight 50%)
+Component 2 — Volume Momentum (weight 40%)  ← backtested optimal
   vol_ratio  = volume_today / rolling_avg_volume_20d
   vol_score  = clip((vol_ratio - 0.5) / 2.5, 0, 1) * 100  # 0.5x→0, 3x→100
 
-VTS = 0.5 * ema_score + 0.5 * vol_score
+VTS = 0.6 * ema_score + 0.4 * vol_score
 ```
 
-Interpretation:
-- VTS >= 70  → Strong trend (BUY zone if VARB confirms)
-- VTS 50–69  → Moderate momentum (WATCH)
-- VTS < 50   → Weak / no trend (AVOID or short candidates)
+Interpretation (backtested thresholds):
+- VTS >= 75  → Strong trend (BUY zone if VARB confirms)  ← optimal threshold
+- VTS 60–74  → Moderate momentum (WATCH)
+- VTS < 60   → Weak / no trend (AVOID)
 
 ### VARB Spread (Volatility-Adjusted Reversion Band)
 
@@ -72,11 +72,14 @@ Interpretation:
 ### Entry Signal Logic
 
 ```
-STRONG_BUY : VTS >= 70 AND varb_spread <= +5   AND regime == "risk_on"
-BUY        : VTS >= 70 AND varb_spread <= +15  AND regime in ("risk_on", "selective")
-WATCH      : VTS 55–69 OR (VTS >= 70 AND varb_spread > +15)
-AVOID      : VTS < 55  OR regime == "risk_off"
+STRONG_BUY : VTS >= 75 AND varb_spread <= +5   AND regime == "risk_on"
+BUY        : VTS >= 75 AND varb_spread <= +15  AND regime in ("risk_on", "selective")
+WATCH      : VTS 60–74 OR (VTS >= 75 AND varb_spread > +15)
+AVOID      : VTS < 60  OR regime == "risk_off"
 ```
+
+Thresholds derived from 80-combo grid search (vts_optimize.py).
+Best combo: w_ema=0.6, vts_min=75, varb_max=5 — Sortino=∞ train, 0.80 OOS.
 
 ### Market Regime (from existing config.py logic)
 
